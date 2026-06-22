@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Video Creator Agent</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="app-header">
+        <div class="brand-row">
+          <div class="mark">VC</div>
+          <div>
+            <p class="eyebrow">AI Marketing Video Producer</p>
+            <h1>Video Creator Agent</h1>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button class="store-chip" id="storeChip" type="button">未保存店铺档案</button>
+          <button class="secondary-action" id="loadDemoBtn" type="button">载入示例</button>
+        </div>
+      </header>
+
+      <section class="profile-panel hidden" id="profilePanel" aria-label="商家档案">
+        <div class="profile-card-head">
+          <div>
+            <div class="brief-card-title" id="profileTitle">商家档案</div>
+            <p id="profileSummary">店铺档案只需要填写一次，后续视频项目会自动复用。</p>
+          </div>
+          <button class="secondary-action" id="toggleProfileBtn" type="button">关闭档案</button>
+        </div>
+        <div class="form-grid inner-grid" id="profileForm">
+          <label class="wide">
+            商家类型
+            <select id="businessTypeInput">
+              <option value="offline">实体店/线下门店</option>
+              <option value="ecommerce">网店/电商商家</option>
+              <option value="service">本地服务商家</option>
+              <option value="brand">品牌/产品方</option>
+            </select>
+          </label>
+          <label>
+            <span id="storeLabel">店铺名称/类型</span>
+            <input id="storeInput" placeholder="例如：广州Super超级网球俱乐部" />
+          </label>
+          <label>
+            <span id="storeFeatureLabel">店铺特色</span>
+            <input id="storeFeatureInput" placeholder="例如：少儿网球培训教育" />
+          </label>
+          <label>
+            <span id="locationLabel">所在场景/区域</span>
+            <input id="locationInput" placeholder="例如：广州市白云区丽影少年宫" />
+          </label>
+          <label>
+            <span id="brandMessageLabel">希望用户记住什么</span>
+            <input id="brandMessageInput" placeholder="例如：少儿网球培训教育专业性，成长性" />
+          </label>
+          <div class="step-actions mini-actions wide">
+            <button class="primary-action" id="saveProfileBtn" type="button">保存店铺档案</button>
+          </div>
+        </div>
+      </section>
+
+      <nav class="progress-bar" aria-label="创作步骤">
+        <button class="step-item active" data-step="brief" type="button">
+          <span>1</span>
+          <strong>背景</strong>
+        </button>
+        <button class="step-item" data-step="assets" type="button">
+          <span>2</span>
+          <strong>素材</strong>
+        </button>
+        <button class="step-item" data-step="strategy" type="button">
+          <span>3</span>
+          <strong>选题</strong>
+        </button>
+        <button class="step-item" data-step="script" type="button">
+          <span>4</span>
+          <strong>脚本</strong>
+        </button>
+        <button class="step-item" data-step="production" type="button">
+          <span>5</span>
+          <strong>执行</strong>
+        </button>
+        <button class="step-item" data-step="preview" type="button">
+          <span>6</span>
+          <strong>成片</strong>
+        </button>
+      </nav>
+
+      <div class="work-layout">
+        <aside class="agent-dock" id="agentDock" aria-label="Agent 对话">
+          <div class="agent-head">
+            <div class="agent-title-row">
+              <div class="agent-avatar">A</div>
+              <div>
+                <strong>创作 Agent</strong>
+                <span id="agentStatus">正在看背景</span>
+              </div>
+            </div>
+            <button class="icon-button agent-toggle" id="agentToggleBtn" title="收起 Agent" type="button">⌄</button>
+          </div>
+
+          <div class="agent-prompt" id="agentPrompt">
+            我会读取主页面里的背景、素材、选题方向和脚本，帮你解释推荐、追问缺失信息，也可以直接按你的话修改结果。
+          </div>
+
+          <div class="chat-log" id="chatLog"></div>
+
+          <div class="quick-actions">
+            <button type="button" data-agent-command="直接用现有素材出片">直接出片</button>
+            <button type="button" data-agent-command="帮我规划拍摄">规划拍摄</button>
+            <button type="button" data-agent-command="更高级一点">更高级一点</button>
+          </div>
+
+          <div class="chat-input-row">
+            <input id="feedbackInput" placeholder="和 agent 说一句你的想法" />
+            <button class="icon-button send-button" id="feedbackBtn" title="发送" type="button">➜</button>
+          </div>
+        </aside>
+
+        <section class="main-flow" aria-live="polite">
+          <section class="step-view" id="briefStep">
+            <div class="step-heading">
+              <p class="eyebrow">Step 1</p>
+              <h2>选择本次视频的工作方式</h2>
+              <p>这里决定主流程是“直接用素材剪一条”，还是先生成拍摄思路。Agent 会读取这些信息，但最终选题方向、脚本和预览都在主页面确认。</p>
+            </div>
+
+            <div class="form-grid">
+              <section class="creation-mode wide" aria-label="创作方式">
+                <button class="mode-card active" data-mode="existing" type="button">
+                  <strong>直接用现有素材出片</strong>
+                  <span>我已经有素材，不想补拍，帮我想选题、写剪辑结构并生成视频。</span>
+                </button>
+                <button class="mode-card" data-mode="planning" type="button">
+                  <strong>帮我规划拍摄</strong>
+                  <span>我还没拍，先帮我想选题方向和可以照着拍的简单脚本。</span>
+                </button>
+                <button class="mode-card" data-mode="mixed" type="button">
+                  <strong>已有素材 + 可以补一点</strong>
+                  <span>先看现有素材能做什么，不够再给我少量补拍建议。</span>
+                </button>
+              </section>
+
+              <label class="wide">
+                这次主要宣传什么
+                <select id="projectTypeInput">
+                  <option value="store_product">店铺 + 具体产品/活动</option>
+                  <option value="store">只做店铺宣传</option>
+                  <option value="product">只做产品种草</option>
+                </select>
+              </label>
+
+              <div class="brief-card wide" id="productBrief">
+                <div class="brief-card-title" id="projectBriefTitle">产品/活动信息</div>
+                <div class="form-grid inner-grid">
+                  <label>
+                    <span id="productLabel">产品/活动名称</span>
+                    <input id="productInput" placeholder="例如：春季新品、开业活动、招牌套餐" />
+                  </label>
+                  <label>
+                    <span id="productFeatureLabel">核心卖点</span>
+                    <input id="productFeatureInput" placeholder="例如：限定供应、性价比高、适合某类人群" />
+                  </label>
+                  <label>
+                    <span id="offerLabel">价格/权益</span>
+                    <input id="offerInput" placeholder="例如：满减、团购价、赠品（没有可留空）" />
+                  </label>
+                  <label>
+                    <span id="timingLabel">活动时间</span>
+                    <input id="timingInput" placeholder="例如：本周末、上新首周（没有可留空）" />
+                  </label>
+                </div>
+              </div>
+
+              <label>
+                发布平台
+                <select id="platformInput">
+                  <option value="全平台">全平台</option>
+                  <option value="抖音">抖音</option>
+                  <option value="小红书">小红书</option>
+                  <option value="视频号">视频号</option>
+                </select>
+              </label>
+              <label class="wide">
+                这次想宣传什么
+                <textarea id="directionInput" placeholder="必填。例如：开业前预热、新店试营业、周年店庆、日常种草"></textarea>
+              </label>
+              <label>
+                视频时长
+                <select id="videoLengthInput">
+                  <option value="15s">15 秒左右</option>
+                  <option value="30s" selected>30 秒左右</option>
+                  <option value="1min">1 分钟左右</option>
+                  <option value="3min_plus">3 分钟以上</option>
+                </select>
+              </label>
+              <label class="hidden">
+                内容结构
+                <select id="contentFormatInput">
+                  <option value="auto" selected>让 AI 按目标判断</option>
+                  <option value="announcement">告知介绍型</option>
+                  <option value="tour">带看体验型</option>
+                  <option value="reason">理由种草型</option>
+                  <option value="problem_solution">问题解决型</option>
+                  <option value="comparison">对比说明型</option>
+                  <option value="story">故事记录型</option>
+                  <option value="offer">权益行动型</option>
+                </select>
+              </label>
+              <label class="wide hidden" id="openingStageGroup">
+                开业相关阶段
+                <select id="openingStageInput">
+                  <option value="auto">自动识别（根据上文判断）</option>
+                  <option value="pre_opening">开业前 · 预热/装修筹备（还没有顾客）</option>
+                  <option value="opening">开业中 · 试营业/正式开幕</option>
+                  <option value="post_opening">开业后 · 回顾/常态经营</option>
+                </select>
+              </label>
+              <label>
+                目标用户
+                <input id="audienceInput" placeholder="例如：附近居民、年轻白领、宝妈群体" />
+              </label>
+              <label>
+                视频风格
+                <select id="styleInput">
+                  <option>氛围感种草</option>
+                  <option>高级质感</option>
+                  <option>本地生活引流</option>
+                  <option>口播介绍</option>
+                  <option>节奏明快</option>
+                </select>
+              </label>
+              <div class="brief-card wide" id="modeBriefCard">
+                <div class="brief-card-title" id="modeBriefTitle">现有素材情况</div>
+                <div class="form-grid inner-grid">
+                  <label>
+                    <span id="modeContextLabel">素材里大概有什么</span>
+                    <input id="modeContextInput" placeholder="例如：门店环境、产品特写、活动海报、短视频片段" />
+                  </label>
+                  <label>
+                    <span id="materialRuleLabel">一定要用/优先用什么</span>
+                    <input id="materialRuleInput" placeholder="例如：优先用产品特写和店内氛围素材" />
+                  </label>
+                  <label class="wide">
+                    <span id="limitLabel">这次不要怎么做</span>
+                    <textarea id="limitInput" placeholder="例如：不补拍，不做复杂口播，尽量用已有素材剪出完整视频。"></textarea>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div class="step-actions">
+              <button class="primary-action" id="briefNextBtn" type="button">下一步：上传或补充素材</button>
+            </div>
+          </section>
+
+          <section class="step-view hidden" id="assetsStep">
+            <div class="step-heading">
+              <p class="eyebrow">Step 2</p>
+              <h2>把已有素材放进来</h2>
+              <p>现在可以先上传图片和短视频。没有素材也可以继续，让 agent 给你补拍清单。</p>
+            </div>
+
+            <div class="brief-card mode-note" id="modeAssetNote">
+              这一步会按你选择的工作方式处理：已有素材优先做剪辑结构；规划拍摄则可以跳过上传。
+            </div>
+
+            <section class="upload-zone" id="uploadZone">
+              <input id="assetInput" type="file" accept="image/*,video/*" multiple />
+              <div class="upload-copy">
+                <strong>点击上传素材</strong>
+                <span>门店、产品、顾客、价格牌、logo、短视频片段</span>
+              </div>
+            </section>
+
+            <div class="asset-toolbar">
+              <div>
+                <strong>素材库</strong>
+                <span id="assetCount">0 个素材</span>
+              </div>
+              <div class="asset-toolbar-actions">
+                <span id="visionSummary">等待上传素材</span>
+                <button class="secondary-action compact-action" id="recognizeAllBtn" type="button">识别全部</button>
+              </div>
+            </div>
+            <div class="asset-grid" id="assetGrid"></div>
+
+            <div class="step-actions split">
+              <button class="secondary-action" data-back="brief" type="button">返回背景</button>
+              <button class="primary-action" id="planBtn" type="button">生成选题方向</button>
+            </div>
+          </section>
+
+          <section class="step-view hidden" id="strategyStep">
+            <div class="step-heading">
+              <p class="eyebrow">Step 3</p>
+              <h2>选择一个视频选题方向</h2>
+              <p>AI 会从营销目标、受众和素材情况里推荐 3 条可执行的视频方案。先选方向，再进入脚本；不确定时可以问右下角 Agent 为什么推荐。</p>
+            </div>
+            <div class="theme-list" id="themeGrid"></div>
+          </section>
+
+          <section class="step-view hidden" id="scriptStep">
+            <div class="step-heading">
+              <p class="eyebrow">Step 4</p>
+              <h2>检查并调整分镜脚本</h2>
+              <p>这一步只调整内容结构：时间、画面、字幕/旁白和每段目的。素材匹配、缺素材处理和字幕卡会放到下一步执行清单里。</p>
+            </div>
+            <div class="script-table" id="scriptTable"></div>
+
+            <div class="step-actions split">
+              <button class="secondary-action" data-back="strategy" type="button">返回选题</button>
+              <button class="primary-action" id="renderBtn" type="button">下一步：拍摄/素材清单</button>
+            </div>
+          </section>
+
+          <section class="step-view hidden" id="productionStep">
+            <div class="step-heading">
+              <p class="eyebrow">Step 5</p>
+              <h2>确认拍摄/素材执行清单</h2>
+              <p>脚本确定后，再把每一段转成商家能执行的清单：现有素材怎么用、还缺什么、剪辑时注意什么。</p>
+            </div>
+
+            <div class="timeline" id="productionList"></div>
+
+            <div class="step-actions split">
+              <button class="secondary-action" data-back="script" type="button">返回脚本</button>
+              <button class="primary-action" id="previewBtn" type="button">生成成片预览</button>
+            </div>
+          </section>
+
+          <section class="step-view hidden" id="previewStep">
+            <div class="step-heading">
+              <p class="eyebrow">Step 6</p>
+              <h2>预览成片结构并导出</h2>
+              <p>这里先展示剪辑结构和竖版预览。后续接入剪辑引擎后，会在这一步输出真实视频。</p>
+            </div>
+
+            <div class="preview-layout">
+              <section class="phone-preview">
+                <div class="phone-screen">
+                  <div class="video-poster" id="videoPoster">
+                    <span>选择选题后生成预览</span>
+                  </div>
+                  <div class="subtitle-strip" id="subtitleStrip">脚本字幕会出现在这里</div>
+                </div>
+                <div class="preview-meta">
+                  <span id="durationLabel">预计 0s</span>
+                  <span id="formatLabel">9:16 竖版</span>
+                </div>
+              </section>
+
+              <section class="timeline-panel">
+                <div class="asset-toolbar">
+                  <strong>剪辑结构</strong>
+                  <span>按脚本自动生成</span>
+                </div>
+                <div class="timeline" id="timeline"></div>
+              </section>
+            </div>
+
+            <div class="step-actions split">
+              <button class="secondary-action" data-back="production" type="button">返回执行清单</button>
+              <div class="persist-actions">
+                <button class="secondary-action" id="loadProjectBtn" type="button">恢复草稿</button>
+                <button class="secondary-action" id="saveProjectBtn" type="button">保存草稿</button>
+                <button class="secondary-action" id="exportBtn" type="button">导出项目 JSON</button>
+                <button class="primary-action" id="renderVideoBtn" type="button">导出视频</button>
+              </div>
+            </div>
+            <div class="render-result hidden" id="renderResult"></div>
+          </section>
+        </section>
+      </div>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

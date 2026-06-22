@@ -1,0 +1,227 @@
+{
+  "version": 1,
+  "note": "少儿网球家长决策链框架。chains[].dimensions 是「角度切面示例」，仅用于启发思考维度，禁止当作标题白名单逐条改写。",
+  "decisionMaker": "parents",
+  "chains": [
+    {
+      "id": "why_tennis",
+      "label": "为什么学网球",
+      "parentQuestion": "为什么让孩子学网球，值不值得投入",
+      "contentGoal": "认知",
+      "dimensions": [
+        "为什么越来越多家庭会把网球当作长期运动选项",
+        "网球作为一项需要专注与规则的运动，家长可以先了解什么",
+        "为什么在素质教育/长期运动规划的讨论里，网球常被单独拿出来说",
+        "为什么不少精英教育路径里会出现网球，家长可以怎么理性看待"
+      ]
+    },
+    {
+      "id": "vs_other_sports",
+      "label": "和其他运动比",
+      "parentQuestion": "和篮球、游泳、羽毛球比，网球特别在哪",
+      "contentGoal": "比较",
+      "dimensions": [
+        "网球的一对一反馈和规则感，和团体球类有什么不同",
+        "从受伤风险、参与门槛、长期可持续性看网球的特点",
+        "网球的礼仪与自我管理要求，对低龄孩子意味着什么"
+      ]
+    },
+    {
+      "id": "growth_value",
+      "label": "对成长的帮助",
+      "parentQuestion": "学网球对孩子的习惯、性格、学习状态有什么帮助",
+      "contentGoal": "价值",
+      "dimensions": [
+        "持久力与专注力：网球训练的等球、盯球、重复如何影响日常状态",
+        "挫折与规则：网球如何让孩子练习输得起、守规则、自己解决问题",
+        "公开讨论：顶尖网球选手的成长路径里，运动与学业如何并行",
+        "户外与体能：规律网球训练对作息和精神状态可能带来的间接帮助"
+      ]
+    },
+    {
+      "id": "trust_pro",
+      "label": "专业与信任",
+      "parentQuestion": "这家机构、教练、课程是否专业、安全、可持续",
+      "contentGoal": "信任",
+      "dimensions": [
+        "第一次体验课，教练通常会先观察孩子的哪几件事",
+        "少儿网球课的安全与分龄安排，家长可以关注什么",
+        "课程如何根据孩子年龄和基础循序推进，而不是一刀切"
+      ]
+    },
+    {
+      "id": "next_step",
+      "label": "怎么开始",
+      "parentQuestion": "孩子几岁合适、怎么体验、怎么咨询",
+      "contentGoal": "行动",
+      "dimensions": [
+        "孩子几岁适合先接触网球，家长别只问年龄还要看什么",
+        "第一次来体验需要准备什么，流程大概是怎样",
+        "怎么判断孩子适不适合继续学，先体验再决定"
+      ]
+    },
+    {
+      "id": "campaign_focus",
+      "label": "活动/本次重点",
+      "parentQuestion": "本次活动或本周重点要解决家长的什么具体问题",
+      "contentGoal": "活动",
+      "dynamic": true,
+      "dimensions": [
+        "活动是什么、面向谁、解决家长什么具体顾虑",
+        "活动的安排细节（时间、人数、师生比、适龄）家长最关心什么",
+        "为什么现在适合参加，以及怎么咨询/报名"
+      ]
+    }
+  ],
+  "contentTypes": [
+    {
+      "id": "explainer",
+      "label": "观点讲解",
+      "kind": "explainer",
+      "requiresStudents": false,
+      "primaryGoals": ["认知", "比较", "价值", "信任", "行动"],
+      "note": "现有决策链产出的观点/价值/科普类，靠讲清楚家长关心的问题来影响决策。"
+    },
+    {
+      "id": "venue_env",
+      "label": "场地环境",
+      "kind": "showcase",
+      "requiresStudents": false,
+      "primaryGoals": ["认知", "信任"],
+      "dimensions": [
+        "带家长云逛一圈：场地、球网、地面和分区长什么样",
+        "少儿训练区的安全细节：缓冲、间距、器材尺寸",
+        "更衣/等候/家长观摩区这些家长会用到的空间"
+      ],
+      "structureTemplate": ["开场镜头（门头/全景）", "边走边拍关键区域", "针对家长顾虑的真实细节特写", "位置与到达方式", "关注/咨询入口"],
+      "compliance": "只拍真实场地，不摆拍夸大；未确认的开放时间/价格不写。"
+    },
+    {
+      "id": "faculty_course",
+      "label": "师资课程",
+      "kind": "showcase",
+      "requiresStudents": false,
+      "primaryGoals": ["信任"],
+      "dimensions": [
+        "教练自我介绍：背景、带低龄孩子的经验与风格",
+        "课程体系怎么分龄、循序怎么推进（用教具/课表实拍）",
+        "教练的教学理念：怎么看待孩子学不会、怎么鼓励"
+      ],
+      "structureTemplate": ["教练/课程出镜引入", "真实讲解或演示", "家长在意的专业点", "适龄与循序说明", "体验/咨询入口"],
+      "compliance": "教练资历需真实可核实，不夸大头衔；不承诺效果或升学。"
+    },
+    {
+      "id": "behind_scene",
+      "label": "运营幕后",
+      "kind": "showcase",
+      "requiresStudents": false,
+      "primaryGoals": ["认知", "信任"],
+      "dimensions": [
+        "筹备/开课前的一天：场地准备、器材清点",
+        "教练的日常：备课、教研、自己练球",
+        "球场的氛围与态度（真实、不摆拍）"
+      ],
+      "structureTemplate": ["幕后场景引入", "真实过程片段", "传递的态度/用心", "和家长的关系", "轻量入口"],
+      "compliance": "真实记录，不刻意制造繁忙/爆满假象。"
+    },
+    {
+      "id": "class_record",
+      "label": "真实课堂",
+      "kind": "showcase",
+      "requiresStudents": true,
+      "primaryGoals": ["信任"],
+      "dimensions": [
+        "一节课在练什么：热身、基本功、游戏化训练的真实片段",
+        "分龄怎么上：不同年龄的课堂节奏与要求",
+        "教练怎么带：纠错、鼓励、维持注意力的真实场景",
+        "教学记录：某个技术点这周怎么拆解练习"
+      ],
+      "structureTemplate": ["课堂开场镜头", "真实训练片段+同期声", "教练带教的细节", "家长能看到的真实边界", "体验/咨询入口"],
+      "compliance": "需有真实课堂与家长肖像授权；不承诺学会时间或效果，不摆拍。"
+    },
+    {
+      "id": "student_growth",
+      "label": "学员成长",
+      "kind": "showcase",
+      "requiresStudents": true,
+      "primaryGoals": ["信任", "价值"],
+      "dimensions": [
+        "某个孩子一段时间的真实变化（动作/专注/习惯）",
+        "孩子从不会到敢上场的真实过程记录",
+        "家长视角的真实反馈（不夸大、不承诺）"
+      ],
+      "structureTemplate": ["成长记录引入", "真实前后对比片段", "孩子/家长的真实感受", "克制的边界说明", "体验/咨询入口"],
+      "compliance": "必须真实、需家长肖像授权；严禁承诺提分/升学/效果，不贴阶层标签，表述用「真实记录」而非「保证」。"
+    }
+  ],
+  "stagePolicy": {
+    "pre_opening": {
+      "label": "开业前预热",
+      "allowedContentTypes": ["explainer", "venue_env", "faculty_course", "behind_scene"],
+      "showcaseShare": 0.2,
+      "note": "还没有学员，真实展示只用 场地/师资/幕后；以观点决策链为主。"
+    },
+    "trial": {
+      "label": "试营业",
+      "allowedContentTypes": ["explainer", "venue_env", "faculty_course", "behind_scene"],
+      "showcaseShare": 0.3,
+      "note": "学员尚不稳定，真实展示仍以 场地/师资/幕后 为主。"
+    },
+    "open": {
+      "label": "正式运营",
+      "allowedContentTypes": ["explainer", "venue_env", "faculty_course", "behind_scene", "class_record", "student_growth"],
+      "showcaseShare": 0.4,
+      "note": "已有学员，解锁真实课堂与学员成长；观点与真实展示结合。"
+    },
+    "daily": {
+      "label": "日常经营",
+      "allowedContentTypes": ["explainer", "venue_env", "faculty_course", "behind_scene", "class_record", "student_growth"],
+      "showcaseShare": 0.5,
+      "note": "日常运营真实素材丰富，真实展示占比更高。"
+    }
+  },
+  "modeCoverage": {
+    "balanced": {
+      "minChains": 4,
+      "required": ["trust_pro", "next_step"],
+      "campaignShare": 0
+    },
+    "focused": {
+      "minChains": 3,
+      "required": ["trust_pro", "next_step"],
+      "campaignShareMin": 0.5,
+      "campaignShareMax": 0.7
+    },
+    "hybrid": {
+      "minChains": 3,
+      "required": ["trust_pro", "next_step"],
+      "campaignCount": [3, 4],
+      "evergreenRequired": ["why_tennis", "growth_value"]
+    }
+  },
+  "contentRules": {
+    "allowedFraming": [
+      "可能有助于",
+      "常被讨论",
+      "公开案例",
+      "家长可以先了解",
+      "为什么精英教育里常出现网球",
+      "顶尖运动员的公开成长路径"
+    ],
+    "forbiddenFraming": [
+      "保证",
+      "必然",
+      "一定能",
+      "提高成绩",
+      "升学优势",
+      "赢在起跑线",
+      "最低价",
+      "秒杀",
+      "抢购",
+      "我们学员都",
+      "富人都在学",
+      "不学就落后"
+    ],
+    "guidance": "精英/名人/运动员升学等话题可以作为现象讨论与家长理性参考，但必须用「现象+可讨论」的措辞，不得贴阶层标签、不得承诺效果或升学、不得暗示来本场即可复制同款路径。"
+  }
+}

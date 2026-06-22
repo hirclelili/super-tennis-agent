@@ -1,0 +1,21 @@
+.env
+.env.*
+!.env.example
+node_modules/
+uploads/
+outputs/
+data/projects/
+
+# 含密钥，绝不入库
+data/ai-settings.local.json
+
+# 运营数据：服务器上单独维护，避免 git pull 覆盖团队积累的数据
+data/venue-profile.json
+data/topic-library.json
+data/finished-content.json
+data/weekly-plan.json
+
+# 日志 / 临时
+*.log
+sta-server.log
+.DS_Store

@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Super Tennis Agent</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="topbar-brand">
+          <strong>Super Tennis Agent</strong>
+          <span id="venueNameLabel">读取球场档案中</span>
+        </div>
+        <div class="topbar-actions">
+          <button class="secondary" id="profileShortcutBtn" type="button">球场档案</button>
+          <button class="secondary" id="aiShortcutBtn" type="button">AI 连接</button>
+        </div>
+      </header>
+
+      <section class="app-layout">
+        <aside class="workspace-sidebar">
+          <nav class="workspace-nav" aria-label="工作区导航">
+            <button class="nav-item active" data-view="plan" type="button">
+              <span>PLAN</span>
+              <strong>一周计划</strong>
+              <small>输入目标，生成本周策略</small>
+            </button>
+            <button class="nav-item" data-view="topics" type="button">
+              <span>TOPIC</span>
+              <strong>选题库</strong>
+              <small>可复用选题与角度，供计划或后续对话调用</small>
+            </button>
+            <button class="nav-item" data-view="content" type="button">
+              <span>CONTENT</span>
+              <strong>内容生产</strong>
+              <small>从排期或选题库进入</small>
+            </button>
+            <button class="nav-item" data-view="library" type="button">
+              <span>LIBRARY</span>
+              <strong>成品库</strong>
+              <small>定稿内容归档，团队共享</small>
+            </button>
+            <button class="nav-item" data-view="channels" type="button">
+              <span>COMMUNITY</span>
+              <strong>社群运营</strong>
+              <small>私域微信群运营</small>
+            </button>
+          </nav>
+        </aside>
+
+        <section class="workspace-main">
+          <section class="page-view" id="planView">
+            <header class="subpage-chrome" id="planChrome">
+              <nav class="breadcrumb" id="planBreadcrumb" aria-label="当前位置"></nav>
+              <div class="subpage-actions" id="planActions"></div>
+            </header>
+
+            <div class="subpage-body" id="planSubpage">
+              <section class="plan-subpage" id="planPageSetup">
+                <div class="subpage-intro">
+                  <h2>本周设定</h2>
+                  <p>填写运营目标与发布频率，生成后进入排期看板。</p>
+                </div>
+                <div class="task-form plan-task-form">
+                  <label>
+                    运营场景
+                    <select id="modeInput">
+                      <option value="daily" selected>日常运营</option>
+                      <option value="opening">开业期</option>
+                      <option value="campaign">活动期</option>
+                      <option value="seasonal">阶段性招生/拉新</option>
+                    </select>
+                  </label>
+                  <label>
+                    倾向目标
+                    <select id="goalInput">
+                      <option value="daily" selected>日常运营</option>
+                      <option value="opening">开业预热</option>
+                      <option value="booking">场地预约</option>
+                      <option value="junior">青训招生</option>
+                      <option value="adult_beginner">成人零基础体验</option>
+                      <option value="community">社群约球</option>
+                      <option value="event">活动报名</option>
+                      <option value="trust">信任建立</option>
+                    </select>
+                  </label>
+                  <label>
+                    重点人群（可选）
+                    <select id="audienceInput">
+                      <option value="">多类人群</option>
+                      <option value="parents">少儿家长</option>
+                      <option value="teens">青少年学员</option>
+                      <option value="adults">成人新手</option>
+                      <option value="players">附近球友</option>
+                      <option value="corporate">企业团建客户</option>
+                    </select>
+                  </label>
+                  <label>
+                    短视频/视频号
+                    <select id="videoCadenceInput">
+                      <option value="0">每周 0 条</option>
+                      <option value="1">每周 1 条</option>
+                      <option value="2" selected>每周 2 条</option>
+                      <option value="3">每周 3 条</option>
+                    </select>
+                  </label>
+                  <label>
+                    小红书图文
+                    <select id="xhsCadenceInput">
+                      <option value="0">每周 0 篇</option>
+                      <option value="1">每周 1 篇</option>
+                      <option value="2" selected>每周 2 篇</option>
+                      <option value="3">每周 3 篇</option>
+                    </select>
+                  </label>
+                  <label>
+                    朋友圈
+                    <select id="momentsCadenceInput">
+                      <option value="0">每周 0 条</option>
+                      <option value="1">每周 1 条</option>
+                      <option value="2">每周 2 条</option>
+                      <option value="3" selected>每周 3 条</option>
+                      <option value="4">每周 4 条</option>
+                      <option value="5">每周 5 条</option>
+                    </select>
+                  </label>
+                  <label class="wide">
+                    近期重点（没有也可以空着）
+                    <input id="focusInput" placeholder="例如：日常保持曝光和私域互动；开业前介绍位置和场地；周末活动报名" />
+                  </label>
+                  <label class="wide">
+                    特定活动/约束/可用素材
+                    <textarea id="eventInput" rows="4" placeholder="没有特定主题可留空。例如：已有场地空镜、教练可出镜、预约方式待确认、不能写价格"></textarea>
+                  </label>
+                </div>
+                <div class="subpage-footer-actions">
+                  <button class="primary" id="planBtn" type="button">生成一周计划</button>
+                </div>
+                <div class="subpage-alert hidden" id="planSetupAlert"></div>
+              </section>
+
+              <section class="plan-subpage hidden" id="planPageBoard">
+                <div id="planBoardContent"></div>
+              </section>
+            </div>
+          </section>
+
+          <section class="page-view hidden" id="topicsView">
+            <header class="subpage-chrome" id="topicsChrome">
+              <nav class="breadcrumb" id="topicsBreadcrumb" aria-label="当前位置"></nav>
+              <div class="subpage-actions" id="topicsActions"></div>
+            </header>
+
+            <div class="subpage-body">
+              <section class="topics-subpage" id="topicsPageLibrary">
+                <section class="page-header topic-library-header">
+                  <div>
+                    <p class="eyebrow">Topic Library</p>
+                    <h2>选题库</h2>
+                    <p class="topic-library-intro">可复用的内容角度。点「生成选题方向」会进入结果步挑选，满意的再保存入库；与排期看板独立，不重复展示本周排期。</p>
+                  </div>
+                  <div class="topic-library-header-actions">
+                    <button class="primary" id="topicsGenerateBtn" type="button">生成选题方向</button>
+                    <button class="secondary" id="topicsCampaignBtn" type="button">活动选题</button>
+                    <button class="secondary" id="topicsReferenceBtn" type="button">从参考开始</button>
+                    <button class="ghost" id="topicsManualBtn" type="button">+ 手动添加</button>
+                  </div>
+                </section>
+
+                <section class="topic-library-toolbar hidden" id="topicLibraryToolbar">
+                  <label class="topic-filter">
+                    <span>搜索</span>
+                    <input id="topicSearchInput" type="search" placeholder="标题、角度、素材…" />
+                  </label>
+                  <label class="topic-filter">
+                    <span>平台</span>
+                    <select id="topicPlatformFilter">
+                      <option value="">全部平台</option>
+                      <option value="xhs">小红书</option>
+                      <option value="douyin">抖音</option>
+                      <option value="video">视频号</option>
+                      <option value="moments">朋友圈</option>
+                      <option value="group">微信群</option>
+                    </select>
+                  </label>
+                  <label class="topic-filter">
+                    <span>来源</span>
+                    <select id="topicSourceFilter">
+                      <option value="">全部来源</option>
+                      <option value="ai">AI 生成</option>
+                      <option value="reference">参考改写</option>
+                      <option value="manual">手动添加</option>
+                      <option value="plan-derived">排期关联</option>
+                    </select>
+                  </label>
+                  <label class="topic-filter">
+                    <span>状态</span>
+                    <select id="topicStatusFilter">
+                      <option value="active" selected>使用中</option>
+                      <option value="unproduced">未生产</option>
+                      <option value="produced">已生产</option>
+                      <option value="archived">已归档</option>
+                      <option value="all">全部</option>
+                    </select>
+                  </label>
+                </section>
+
+                <section id="topicsResult">
+                  <article class="empty-state">
+                    <p class="eyebrow">Topic Library</p>
+                    <h2>暂无选题</h2>
+                    <p>点击「生成选题方向」会根据球场档案和运营输入产出一批角度，挑选后保存入库；也可以「从参考开始」或「手动添加」。</p>
+                  </article>
+                </section>
+              </section>
+
+              <section class="topics-subpage hidden" id="topicsPageGenerate">
+                <div id="topicsGenerateContent"></div>
+              </section>
+            </div>
+
+            <div id="topicsModalRoot"></div>
+          </section>
+
+          <section class="page-view hidden" id="contentView">
+            <article class="empty-state">
+              <p class="eyebrow">Material Desk</p>
+              <h2>还没有选择选题</h2>
+              <p>先从选题库选择一个选题。</p>
+            </article>
+          </section>
+
+          <section class="page-view hidden" id="libraryView">
+            <section class="page-header">
+              <div>
+                <p class="eyebrow">Content Library</p>
+                <h2>成品库</h2>
+                <p>内容生产里点「定稿」的成品会归档到这里，团队共享、随时复制或继续修改。</p>
+              </div>
+            </section>
+            <section id="libraryResult"></section>
+          </section>
+
+          <section class="page-view hidden" id="channelsView">
+            <section class="page-header">
+              <div>
+                <p class="eyebrow">Community Operations</p>
+                <h2>社群运营</h2>
+                <p>私域微信群的运营阵地。更多社群功能后续会陆续加上，其它平台的零散运营问题可直接问右下角的对话助手。</p>
+              </div>
+            </section>
+
+            <section class="channel-grid">
+              <article class="channel-card channel-card-action">
+                <p class="eyebrow">微信社群</p>
+                <h3>互动、答疑和意向收集</h3>
+                <p>读取一周计划主题，生成群内每日话题、互动选项、跟进动作和 FAQ。</p>
+                <button class="primary" id="communityBtn" type="button">生成社群节奏</button>
+              </article>
+            </section>
+
+            <section id="channelsResult">
+              <article class="empty-state">
+                <p class="eyebrow">Wechat Group</p>
+                <h2>还没有生成微信社群节奏</h2>
+                <p>先生成一周计划，再在这里为微信群生成每日话题、提醒和跟进动作。</p>
+              </article>
+            </section>
+          </section>
+
+          <section class="page-view hidden" id="profileView">
+            <section class="page-header">
+              <div>
+                <p class="eyebrow">Venue Profile</p>
+                <h2>球场档案</h2>
+                <p>AI 生成读取的基础事实、品牌语气和运营约束。</p>
+              </div>
+              <div class="button-row">
+                <span class="status" id="profileStatus">读取中</span>
+                <button class="primary" id="saveProfileBtn" type="button">保存球场档案</button>
+              </div>
+            </section>
+
+            <section class="page-section">
+              <div class="section-head">
+                <div>
+                  <p class="eyebrow">Venue Profile</p>
+                  <h3>球场档案</h3>
+                </div>
+                <p>价格、开放时间、活动规则等未确认信息，不建议写进档案。</p>
+              </div>
+              <div class="profile-fields profile-editor">
+                <label>
+                  球场名称
+                  <input id="nameInput" />
+                </label>
+                <label>
+                  简称
+                  <input id="shortNameInput" />
+                </label>
+                <label>
+                  城市
+                  <input id="cityInput" />
+                </label>
+                <label>
+                  地址/所在区域
+                  <input id="locationInput" />
+                </label>
+                <label>
+                  当前运营阶段
+                  <select id="stageInput">
+                    <option value="pre_opening">开业前预热</option>
+                    <option value="trial">试营业</option>
+                    <option value="open">正式运营</option>
+                    <option value="daily">日常经营</option>
+                  </select>
+                </label>
+                <label class="wide">
+                  定位
+                  <textarea id="positioningInput" rows="3"></textarea>
+                </label>
+                <label class="wide">
+                  服务项目
+                  <textarea id="servicesInput" rows="4" placeholder="一行一个"></textarea>
+                </label>
+                <label class="wide">
+                  目标人群
+                  <textarea id="audiencesInput" rows="4" placeholder="一行一个"></textarea>
+                </label>
+                <label class="wide">
+                  语气
+                  <textarea id="toneInput" rows="3"></textarea>
+                </label>
+                <label>
+                  预约方式
+                  <input id="bookingInput" />
+                </label>
+                <label>
+                  微信/社群入口
+                  <input id="wechatInput" />
+                </label>
+              </div>
+            </section>
+          </section>
+
+          <section class="page-view hidden" id="aiView">
+            <section class="page-header">
+              <div>
+                <p class="eyebrow">AI Connection</p>
+                <h2>AI 连接</h2>
+                <p>配置大模型服务商。API Key 只保存在本地私有配置里，页面不会回显明文。</p>
+              </div>
+              <div class="button-row">
+                <span class="status" id="aiStatus">未保存</span>
+                <button class="primary" id="saveAiBtn" type="button">保存 AI 连接</button>
+              </div>
+            </section>
+
+            <section class="page-section">
+              <div class="section-head">
+                <div>
+                  <p class="eyebrow">Default Provider</p>
+                  <h3>默认模型</h3>
+                </div>
+              </div>
+              <div class="ai-default-row">
+                <label>
+                  默认服务商
+                  <select id="activeProviderInput">
+                    <option value="openai">OpenAI / GPT</option>
+                    <option value="deepseek">DeepSeek</option>
+                    <option value="gemini">Gemini</option>
+                    <option value="doubao">豆包 / 火山方舟</option>
+                  </select>
+                </label>
+                <p class="hint">生成一周计划会使用这里选的默认服务商。填写 API Key 并保存后就会生效。</p>
+              </div>
+            </section>
+
+            <section class="ai-provider-grid">
+              <article class="ai-provider-card" data-provider="openai">
+                <div class="card-topline">
+                  <strong>OpenAI / GPT</strong>
+                  <label class="inline-check"><input type="checkbox" data-ai-field="enabled" /> 启用</label>
+                </div>
+                <label>API Key <input data-ai-field="apiKey" type="password" placeholder="已保存则可留空" /></label>
+                <small data-ai-field="maskedKey"></small>
+                <label>模型 <input data-ai-field="model" placeholder="gpt-4.1-mini" /></label>
+                <label>Base URL <input data-ai-field="baseUrl" placeholder="https://api.openai.com/v1" /></label>
+                <button class="secondary ai-test" data-provider="openai" type="button">测试连接</button>
+                <p class="ai-test-result" data-ai-field="status"></p>
+              </article>
+
+              <article class="ai-provider-card" data-provider="deepseek">
+                <div class="card-topline">
+                  <strong>DeepSeek</strong>
+                  <label class="inline-check"><input type="checkbox" data-ai-field="enabled" /> 启用</label>
+                </div>
+                <label>API Key <input data-ai-field="apiKey" type="password" placeholder="已保存则可留空" /></label>
+                <small data-ai-field="maskedKey"></small>
+                <label>模型 <input data-ai-field="model" placeholder="deepseek-chat" /></label>
+                <label>Base URL <input data-ai-field="baseUrl" placeholder="https://api.deepseek.com" /></label>
+                <button class="secondary ai-test" data-provider="deepseek" type="button">测试连接</button>
+                <p class="ai-test-result" data-ai-field="status"></p>
+              </article>
+
+              <article class="ai-provider-card" data-provider="gemini">
+                <div class="card-topline">
+                  <strong>Gemini</strong>
+                  <label class="inline-check"><input type="checkbox" data-ai-field="enabled" /> 启用</label>
+                </div>
+                <label>API Key <input data-ai-field="apiKey" type="password" placeholder="已保存则可留空" /></label>
+                <small data-ai-field="maskedKey"></small>
+                <label>模型 <input data-ai-field="model" placeholder="gemini-1.5-flash" /></label>
+                <label>Base URL <input data-ai-field="baseUrl" placeholder="https://generativelanguage.googleapis.com/v1beta" /></label>
+                <button class="secondary ai-test" data-provider="gemini" type="button">测试连接</button>
+                <p class="ai-test-result" data-ai-field="status"></p>
+              </article>
+
+              <article class="ai-provider-card" data-provider="doubao">
+                <div class="card-topline">
+                  <strong>豆包 / 火山方舟</strong>
+                  <label class="inline-check"><input type="checkbox" data-ai-field="enabled" /> 启用</label>
+                </div>
+                <label>API Key <input data-ai-field="apiKey" type="password" placeholder="已保存则可留空" /></label>
+                <small data-ai-field="maskedKey"></small>
+                <label>模型 / Endpoint ID <input data-ai-field="model" placeholder="ep-xxxxxxxx" /></label>
+                <label>Base URL <input data-ai-field="baseUrl" placeholder="https://ark.cn-beijing.volces.com/api/v3" /></label>
+                <button class="secondary ai-test" data-provider="doubao" type="button">测试连接</button>
+                <p class="ai-test-result" data-ai-field="status"></p>
+              </article>
+            </section>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <aside class="agent-dock" id="agentDock">
+      <button class="agent-fab" id="agentFab" type="button" aria-label="打开对话助手">
+        <span class="agent-fab-icon">AI</span>
+        <span class="agent-fab-dot" hidden></span>
+      </button>
+      <section class="agent-panel hidden" id="agentPanel" aria-label="对话助手">
+        <header class="agent-panel-head">
+          <div>
+            <strong>对话助手</strong>
+            <small>说一句话，帮你排计划、出选题，也能聊经营</small>
+          </div>
+          <button class="agent-close" id="agentCloseBtn" type="button" aria-label="收起">×</button>
+        </header>
+        <div class="agent-quick-actions" id="agentQuickActions">
+          <button class="agent-quick-btn" data-agent-quick="plan" type="button">生成一周计划</button>
+          <button class="agent-quick-btn" data-agent-quick="topic" type="button">生成选题方向</button>
+        </div>
+        <div class="agent-messages" id="agentMessages"></div>
+        <div class="agent-result-block" id="agentResultBlock"></div>
+        <form class="agent-input-row" id="agentForm">
+          <textarea id="agentInput" rows="1" placeholder="例如：7月暑期营，5天限12人，想招4-8岁"></textarea>
+          <button class="primary" id="agentSendBtn" type="submit">发送</button>
+        </form>
+      </section>
+    </aside>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
