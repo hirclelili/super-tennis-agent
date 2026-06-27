@@ -1519,10 +1519,10 @@ function buildPillars(profile = {}, task = {}) {
     else if (eventInfo) role = `结合活动/约束「${eventInfo.slice(0, 36)}${eventInfo.length > 36 ? "…" : ""}」：${def.role}`;
 
     return {
-      id: key,
+    id: key,
       label: contextualLabels[key] || def.label,
       role,
-      ratio,
+    ratio,
       weight: parseInt(ratio, 10) + (boost[key] || 0),
     };
   });
@@ -3892,7 +3892,7 @@ async function buildReferenceDirectionsWithAi(profile, task = {}, reference = {}
       directions = data.directions.map((rawTopic, index) => {
         const raw = normalizeTopicRaw({ ...rawTopic, source: "reference" }, profile, normalizedTask);
         const decorated = decorateTopic(raw, profile, normalizedTask, { score: 80 - index, source: "reference" });
-        return {
+  return {
           ...decorated,
           contentType: String(rawTopic.contentType || "").trim() || "explainer",
         };
@@ -3998,23 +3998,23 @@ function pickTopicForSlot(slot, rankedTopics, usedIds) {
 
 function buildScheduleItem(slot, topic, profile, task, extras = {}) {
   const goal = inferPrimaryGoal(task);
-  return {
+    return {
     day: slot.day,
     platform: slot.platform,
     format: slot.format,
     theme: extras.theme || slot.theme || "本周内容",
     goal: topic.goal || goal,
     topicId: topic.id,
-    topicTitle: topic.title,
+      topicTitle: topic.title,
     topicAngle: extras.topicAngle || topic.purpose,
     whyPlatform: extras.whyPlatform || `该选题适合在${slot.platform}用${slot.format}表达`,
     whyTiming: extras.whyTiming || `安排在${slot.day}发布`,
-    pillar: topicPillar(topic),
+      pillar: topicPillar(topic),
     pillarLabel: pillarDefinitions[topicPillar(topic)]?.label || topicPillar(topic),
-    targetAudience: topic.audiences.map((audience) => audienceLabels[audience] || audience).join(" / "),
-    materialNeed: topic.materials.slice(0, 4),
+      targetAudience: topic.audiences.map((audience) => audienceLabels[audience] || audience).join(" / "),
+      materialNeed: topic.materials.slice(0, 4),
     action: topic.suggestedCta || topic.cta || "发布后引导收藏、私信或进群",
-    risk: topic.risk,
+      risk: topic.risk,
     reason: extras.reason || topic.purpose,
   };
 }
@@ -4501,13 +4501,13 @@ function buildVideoMaterial(profile, topic) {
     const narration = isShowcase
       ? `这里看${step}，重点是用真实画面说清楚，不夸张也不硬推。`
       : `关于${step}，我们用一个简单判断来说：先看孩子的兴趣和状态，再看训练是否循序渐进，不要用夸张承诺做决定。`;
-    return {
-    id: index + 1,
+  return {
+      id: index + 1,
     time: videoShotTime(index, structure.length, policy.estimatedDurationSeconds),
     visual: materials[index % materials.length] || "场地真实画面",
     narration,
     onScreenText: subtitleFromNarration(narration, step),
-    intent: step,
+      intent: step,
     };
   });
   const material = {
@@ -5740,36 +5740,21 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // 鉴权：ACCESS_TOKEN 未设置 = 不启用（本地开发）；设置后所有 API 和首屏都需要 token。
-    if (accessToken) {
+    // 鉴权：ACCESS_TOKEN 未设置 = 不启用（本地开发）。
+    // 设置后只挡 /api/*；首屏和静态资源（CSS/JS/favicon/图片）全部放行，
+    // 这样浏览器才能加载 index.html，进而通过前端 JS 把 token 加到 API 请求里。
+    // 用户没 token 时，访问首屏会看到登录页（由前端 app.js 渲染），而不是被服务端拦截。
+    if (accessToken && pathname.startsWith("/api/")) {
       const supplied = extractTokenFromRequest(req);
       if (!supplied || supplied !== accessToken) {
-        // API 路径返回 401 JSON；首屏 GET 返回一个最简单的 HTML 提示输入 token，
-        // 这样未授权用户连登录页以外的资源都看不到。
-        if (pathname.startsWith("/api/")) {
-          unauthorized(res, pathname);
-          return;
-        }
-        res.writeHead(401, { "content-type": "text/html; charset=utf-8" });
-        res.end(`<!doctype html><meta charset="utf-8"><title>请输入访问令牌</title>
-<style>body{font-family:system-ui,sans-serif;max-width:420px;margin:80px auto;padding:0 24px;color:#1f2937}
-h1{font-size:20px;margin:0 0 8px} p{color:#6b7280;font-size:14px;margin:0 0 16px}
-input{width:100%;padding:10px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;box-sizing:border-box}
-button{margin-top:12px;padding:10px 16px;background:#111827;color:#fff;border:0;border-radius:8px;font-size:14px;cursor:pointer;width:100%}
-.err{color:#b91c1c;font-size:13px;margin-top:8px;min-height:18px}</style>
-<h1>Super Tennis Agent</h1><p>这是一个团队私有服务。请输入访问令牌继续。</p>
-<input id="t" placeholder="访问令牌" autofocus><button onclick="go()">进入</button><div class="err" id="e"></div>
-<script>
-function go(){
-  var v=document.getElementById('t').value.trim();
-  if(!v){document.getElementById('e').textContent='请输入令牌';return}
-  var u=new URL(location.href);u.searchParams.set('token',v);location.replace(u.toString());
-}
-document.getElementById('t').addEventListener('keydown',function(e){if(e.key==='Enter')go()});
-</script>`);
+        unauthorized(res, pathname);
         return;
       }
     }
+
+    // 已废弃的鉴权门已删除（之前会把 CSS/JS 也挡了，导致 UI 加载不出来）。
+    // 现在鉴权只挡 /api/*；首屏和静态资源放行，浏览器加载完 index.html 后，
+    // 前端 JS 通过 fetch 时带 Authorization 头来访问 API。
 
     if (req.method === "GET" && pathname === "/api/health") {
       sendJson(res, 200, {
