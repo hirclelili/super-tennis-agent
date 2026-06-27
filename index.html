@@ -23,29 +23,22 @@
         <aside class="workspace-sidebar">
           <nav class="workspace-nav" aria-label="工作区导航">
             <button class="nav-item active" data-view="plan" type="button">
-              <span>PLAN</span>
               <strong>一周计划</strong>
-              <small>输入目标，生成本周策略</small>
+            </button>
+            <button class="nav-item" data-view="campaign" type="button">
+              <strong>活动策划</strong>
             </button>
             <button class="nav-item" data-view="topics" type="button">
-              <span>TOPIC</span>
               <strong>选题库</strong>
-              <small>可复用选题与角度，供计划或后续对话调用</small>
             </button>
             <button class="nav-item" data-view="content" type="button">
-              <span>CONTENT</span>
               <strong>内容生产</strong>
-              <small>从排期或选题库进入</small>
             </button>
             <button class="nav-item" data-view="library" type="button">
-              <span>LIBRARY</span>
               <strong>成品库</strong>
-              <small>定稿内容归档，团队共享</small>
             </button>
             <button class="nav-item" data-view="channels" type="button">
-              <span>COMMUNITY</span>
               <strong>社群运营</strong>
-              <small>私域微信群运营</small>
             </button>
           </nav>
         </aside>
@@ -58,23 +51,27 @@
             </header>
 
             <div class="subpage-body" id="planSubpage">
-              <section class="plan-subpage" id="planPageSetup">
+              <section class="plan-subpage" id="planPageList">
+                <div class="plan-list-head">
+                  <div class="subpage-intro">
+                    <h2>一周计划</h2>
+                  </div>
+                  <button class="primary" data-plan-nav="setup" type="button">生成新一周计划</button>
+                </div>
+                <div id="planListContent"></div>
+              </section>
+
+              <section class="plan-subpage hidden" id="planPageSetup">
                 <div class="subpage-intro">
                   <h2>本周设定</h2>
-                  <p>填写运营目标与发布频率，生成后进入排期看板。</p>
+                </div>
+                <div class="plan-context-row">
+                  <span>当前阶段</span>
+                  <strong id="planStageContext">读取中</strong>
                 </div>
                 <div class="task-form plan-task-form">
                   <label>
-                    运营场景
-                    <select id="modeInput">
-                      <option value="daily" selected>日常运营</option>
-                      <option value="opening">开业期</option>
-                      <option value="campaign">活动期</option>
-                      <option value="seasonal">阶段性招生/拉新</option>
-                    </select>
-                  </label>
-                  <label>
-                    倾向目标
+                    本周目标
                     <select id="goalInput">
                       <option value="daily" selected>日常运营</option>
                       <option value="opening">开业预热</option>
@@ -98,32 +95,13 @@
                     </select>
                   </label>
                   <label>
-                    短视频/视频号
-                    <select id="videoCadenceInput">
-                      <option value="0">每周 0 条</option>
-                      <option value="1">每周 1 条</option>
-                      <option value="2" selected>每周 2 条</option>
-                      <option value="3">每周 3 条</option>
-                    </select>
-                  </label>
-                  <label>
-                    小红书图文
-                    <select id="xhsCadenceInput">
-                      <option value="0">每周 0 篇</option>
-                      <option value="1">每周 1 篇</option>
-                      <option value="2" selected>每周 2 篇</option>
-                      <option value="3">每周 3 篇</option>
-                    </select>
-                  </label>
-                  <label>
-                    朋友圈
-                    <select id="momentsCadenceInput">
-                      <option value="0">每周 0 条</option>
-                      <option value="1">每周 1 条</option>
+                    本周公域内容条数
+                    <select id="contentCadenceInput">
                       <option value="2">每周 2 条</option>
-                      <option value="3" selected>每周 3 条</option>
-                      <option value="4">每周 4 条</option>
+                      <option value="3">每周 3 条</option>
+                      <option value="4" selected>每周 4 条</option>
                       <option value="5">每周 5 条</option>
+                      <option value="6">每周 6 条</option>
                     </select>
                   </label>
                   <label class="wide">
@@ -157,9 +135,7 @@
               <section class="topics-subpage" id="topicsPageLibrary">
                 <section class="page-header topic-library-header">
                   <div>
-                    <p class="eyebrow">Topic Library</p>
                     <h2>选题库</h2>
-                    <p class="topic-library-intro">可复用的内容角度。点「生成选题方向」会进入结果步挑选，满意的再保存入库；与排期看板独立，不重复展示本周排期。</p>
                   </div>
                   <div class="topic-library-header-actions">
                     <button class="primary" id="topicsGenerateBtn" type="button">生成选题方向</button>
@@ -174,44 +150,16 @@
                     <span>搜索</span>
                     <input id="topicSearchInput" type="search" placeholder="标题、角度、素材…" />
                   </label>
-                  <label class="topic-filter">
-                    <span>平台</span>
-                    <select id="topicPlatformFilter">
-                      <option value="">全部平台</option>
-                      <option value="xhs">小红书</option>
-                      <option value="douyin">抖音</option>
-                      <option value="video">视频号</option>
-                      <option value="moments">朋友圈</option>
-                      <option value="group">微信群</option>
-                    </select>
-                  </label>
-                  <label class="topic-filter">
-                    <span>来源</span>
-                    <select id="topicSourceFilter">
-                      <option value="">全部来源</option>
-                      <option value="ai">AI 生成</option>
-                      <option value="reference">参考改写</option>
-                      <option value="manual">手动添加</option>
-                      <option value="plan-derived">排期关联</option>
-                    </select>
-                  </label>
-                  <label class="topic-filter">
-                    <span>状态</span>
-                    <select id="topicStatusFilter">
-                      <option value="active" selected>使用中</option>
-                      <option value="unproduced">未生产</option>
-                      <option value="produced">已生产</option>
-                      <option value="archived">已归档</option>
-                      <option value="all">全部</option>
-                    </select>
+                  <label class="topic-filter topic-filter-toggle">
+                    <input id="topicShowArchived" type="checkbox" />
+                    <span>显示已归档</span>
                   </label>
                 </section>
 
                 <section id="topicsResult">
                   <article class="empty-state">
-                    <p class="eyebrow">Topic Library</p>
                     <h2>暂无选题</h2>
-                    <p>点击「生成选题方向」会根据球场档案和运营输入产出一批角度，挑选后保存入库；也可以「从参考开始」或「手动添加」。</p>
+                    <p>生成选题方向，挑选后保存入库。</p>
                   </article>
                 </section>
               </section>
@@ -226,18 +174,23 @@
 
           <section class="page-view hidden" id="contentView">
             <article class="empty-state">
-              <p class="eyebrow">Material Desk</p>
-              <h2>还没有选择选题</h2>
-              <p>先从选题库选择一个选题。</p>
+              <h2>未选择选题</h2>
+              <p>从选题库进入内容生产。</p>
+            </article>
+          </section>
+
+          <section class="page-view hidden" id="campaignView">
+            <article class="empty-state">
+              <h2>暂无活动策划</h2>
+              <p>选择活动类型或输入目标，生成活动方案。</p>
             </article>
           </section>
 
           <section class="page-view hidden" id="libraryView">
             <section class="page-header">
               <div>
-                <p class="eyebrow">Content Library</p>
                 <h2>成品库</h2>
-                <p>内容生产里点「定稿」的成品会归档到这里，团队共享、随时复制或继续修改。</p>
+                <p>按一周计划查看 计划 → 选题 → 成品 的产出链路，或切换到全部成品列表。</p>
               </div>
             </section>
             <section id="libraryResult"></section>
@@ -246,36 +199,32 @@
           <section class="page-view hidden" id="channelsView">
             <section class="page-header">
               <div>
-                <p class="eyebrow">Community Operations</p>
                 <h2>社群运营</h2>
-                <p>私域微信群的运营阵地。更多社群功能后续会陆续加上，其它平台的零散运营问题可直接问右下角的对话助手。</p>
+                <p>按群类型生成本周社群节奏与可复用话术库，干货日复用本周公域内容。</p>
               </div>
+              <button class="primary" id="communityBtn" type="button">生成意向家长群方案</button>
             </section>
 
-            <section class="channel-grid">
-              <article class="channel-card channel-card-action">
-                <p class="eyebrow">微信社群</p>
-                <h3>互动、答疑和意向收集</h3>
-                <p>读取一周计划主题，生成群内每日话题、互动选项、跟进动作和 FAQ。</p>
-                <button class="primary" id="communityBtn" type="button">生成社群节奏</button>
-              </article>
-            </section>
+            <div class="group-type-tabs" id="groupTypeTabs">
+              <button class="group-tab is-active" data-group="prospect_parents" type="button">意向家长群</button>
+              <button class="group-tab" data-group="enrolled_parents" type="button">在读学员家长群</button>
+              <button class="group-tab" data-group="adult_players" type="button">成人约球群</button>
+            </div>
 
             <section id="channelsResult">
               <article class="empty-state">
-                <p class="eyebrow">Wechat Group</p>
-                <h2>还没有生成微信社群节奏</h2>
-                <p>先生成一周计划，再在这里为微信群生成每日话题、提醒和跟进动作。</p>
+                <h2>暂无社群方案</h2>
+                <p>点击「生成意向家长群方案」。</p>
               </article>
             </section>
+
+            <section id="communityHistory"></section>
           </section>
 
           <section class="page-view hidden" id="profileView">
             <section class="page-header">
               <div>
-                <p class="eyebrow">Venue Profile</p>
                 <h2>球场档案</h2>
-                <p>AI 生成读取的基础事实、品牌语气和运营约束。</p>
               </div>
               <div class="button-row">
                 <span class="status" id="profileStatus">读取中</span>
@@ -286,10 +235,8 @@
             <section class="page-section">
               <div class="section-head">
                 <div>
-                  <p class="eyebrow">Venue Profile</p>
-                  <h3>球场档案</h3>
+                  <h3>基础信息</h3>
                 </div>
-                <p>价格、开放时间、活动规则等未确认信息，不建议写进档案。</p>
               </div>
               <div class="profile-fields profile-editor">
                 <label>
@@ -348,9 +295,7 @@
           <section class="page-view hidden" id="aiView">
             <section class="page-header">
               <div>
-                <p class="eyebrow">AI Connection</p>
                 <h2>AI 连接</h2>
-                <p>配置大模型服务商。API Key 只保存在本地私有配置里，页面不会回显明文。</p>
               </div>
               <div class="button-row">
                 <span class="status" id="aiStatus">未保存</span>
@@ -361,7 +306,6 @@
             <section class="page-section">
               <div class="section-head">
                 <div>
-                  <p class="eyebrow">Default Provider</p>
                   <h3>默认模型</h3>
                 </div>
               </div>
@@ -375,7 +319,6 @@
                     <option value="doubao">豆包 / 火山方舟</option>
                   </select>
                 </label>
-                <p class="hint">生成一周计划会使用这里选的默认服务商。填写 API Key 并保存后就会生效。</p>
               </div>
             </section>
 
@@ -445,19 +388,24 @@
       <section class="agent-panel hidden" id="agentPanel" aria-label="对话助手">
         <header class="agent-panel-head">
           <div>
-            <strong>对话助手</strong>
-            <small>说一句话，帮你排计划、出选题，也能聊经营</small>
+            <strong>运营助手</strong>
+            <small id="agentContextLabel">和主工作区联动</small>
           </div>
-          <button class="agent-close" id="agentCloseBtn" type="button" aria-label="收起">×</button>
+          <div class="agent-head-actions">
+            <button class="agent-expand" id="agentExpandBtn" type="button">放大</button>
+            <button class="agent-close" id="agentCloseBtn" type="button" aria-label="收起">×</button>
+          </div>
         </header>
         <div class="agent-quick-actions" id="agentQuickActions">
-          <button class="agent-quick-btn" data-agent-quick="plan" type="button">生成一周计划</button>
-          <button class="agent-quick-btn" data-agent-quick="topic" type="button">生成选题方向</button>
+          <button class="agent-quick-btn" data-agent-quick="plan" type="button">一周计划</button>
+          <button class="agent-quick-btn" data-agent-quick="topic" type="button">选题方向</button>
+          <button class="agent-quick-btn" data-agent-quick="content" type="button">内容生产</button>
+          <button class="agent-quick-btn" data-agent-quick="community" type="button">社群节奏</button>
+          <button class="agent-quick-btn" data-agent-quick="campaign" type="button">活动策划</button>
         </div>
         <div class="agent-messages" id="agentMessages"></div>
-        <div class="agent-result-block" id="agentResultBlock"></div>
         <form class="agent-input-row" id="agentForm">
-          <textarea id="agentInput" rows="1" placeholder="例如：7月暑期营，5天限12人，想招4-8岁"></textarea>
+          <textarea id="agentInput" rows="1" placeholder="输入运营想法，或直接说要生成什么"></textarea>
           <button class="primary" id="agentSendBtn" type="submit">发送</button>
         </form>
       </section>

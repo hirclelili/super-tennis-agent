@@ -14,6 +14,12 @@ data/venue-profile.json
 data/topic-library.json
 data/finished-content.json
 data/weekly-plan.json
+data/weekly-plans.json
+data/community-plans.json
+data/campaign-plans.json
+
+# 旧版视频生成器：与新版本无依赖关系，避免误提交
+legacy-video-creator/
 
 # 日志 / 临时
 *.log

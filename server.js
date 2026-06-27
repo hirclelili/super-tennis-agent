@@ -1,18 +1,57 @@
 import http from "node:http";
 import https from "node:https";
-import { access, constants, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, constants, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const host = process.env.HOST || "127.0.0.1";
+
+// 原子写 JSON：先写 .tmp，再 rename 覆盖目标文件。
+// 避免进程在写到一半时被杀、崩溃、断电，导致目标 JSON 损坏（全 0 字节或半截）。
+async function atomicWriteJson(filePath, data) {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+  await rename(tmp, filePath);
+}
+const host = process.env.HOST || "0.0.0.0";
 const port = Number(process.env.PORT || 5173);
+
+// 简单 token 鉴权：未设置 ACCESS_TOKEN 时不启用（保留本地开发体验）。
+// 设置后，所有 /api/* 请求和首屏 HTML 都需要带 token。
+// 团队成员首次访问时，输入 token，浏览器把它存 localStorage 自动带上。
+// 也支持把 token 放在 URL ?token=xxx 里直接打开分享链接。
+const accessToken = process.env.ACCESS_TOKEN || "";
+
+function extractTokenFromRequest(req) {
+  const auth = req.headers["authorization"];
+  if (auth && /^Bearer\s+/i.test(auth)) {
+    return auth.replace(/^Bearer\s+/i, "").trim();
+  }
+  try {
+    const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+    return url.searchParams.get("token") || "";
+  } catch {
+    return "";
+  }
+}
+
+function unauthorized(res, pathname) {
+  res.writeHead(401, {
+    "content-type": "application/json; charset=utf-8",
+    "www-authenticate": 'Bearer realm="tennis-agent"',
+  });
+  res.end(JSON.stringify({ error: "未授权：请输入访问令牌", authRequired: true, pathname }));
+}
 const profilePath = path.join(__dirname, "data", "venue-profile.json");
 const aiSettingsPath = path.join(__dirname, "data", "ai-settings.local.json");
 const topicLibraryPath = path.join(__dirname, "data", "topic-library.json");
 const finishedContentPath = path.join(__dirname, "data", "finished-content.json");
 const weeklyPlanPath = path.join(__dirname, "data", "weekly-plan.json");
+const weeklyPlansPath = path.join(__dirname, "data", "weekly-plans.json");
+const communityPlansPath = path.join(__dirname, "data", "community-plans.json");
+const campaignPlansPath = path.join(__dirname, "data", "campaign-plans.json");
 const angleFrameworkPath = path.join(__dirname, "data", "junior-topic-angle-framework.json");
 
 const providerDefaults = {
@@ -236,9 +275,7 @@ const topicBank = [
 ];
 
 const cadenceDefaults = {
-  video: 2,
-  xhsImage: 2,
-  moments: 3,
+  content: 4,
 };
 
 const publishingSlots = {
@@ -262,14 +299,22 @@ const publishingSlots = {
 };
 
 function sendJson(res, statusCode, data) {
-  res.writeHead(statusCode, {
+  // 收紧 CORS：仅允许同源请求（请求带 Origin 时回显，否则不设）。
+  // 浏览器同源请求不会带 Origin，非同源才会带 —— 这样既兼容本机浏览器调用，
+  // 又避免被任意网页跨域调接口。
+  const origin = currentRequest?.headers?.origin;
+  const headers = {
     "content-type": "application/json; charset=utf-8",
-    "access-control-allow-origin": "*",
     "access-control-allow-methods": "GET,POST,PATCH,DELETE,OPTIONS",
-    "access-control-allow-headers": "content-type",
-  });
+    "access-control-allow-headers": "content-type, authorization",
+  };
+  if (origin) headers["access-control-allow-origin"] = origin;
+  res.writeHead(statusCode, headers);
   res.end(JSON.stringify(data, null, 2));
 }
+
+// 当前请求对象的快照，供 sendJson 读取 origin 用，避免给所有 42 个 sendJson 调用点加参数。
+let currentRequest = null;
 
 async function readJson(req) {
   const chunks = [];
@@ -284,7 +329,7 @@ async function loadProfile() {
 }
 
 async function saveProfile(profile) {
-  await writeFile(profilePath, `${JSON.stringify(profile, null, 2)}\n`, "utf8");
+  await atomicWriteJson(profilePath, profile);
 }
 
 let angleFrameworkCache = null;
@@ -340,6 +385,22 @@ function resolveStagePolicy(profile = {}, framework = {}) {
   };
 }
 
+// 把 brief.contentType 解析成可用的硬锁类型；不可用(非法/本阶段未解锁)时返回 ""。
+function resolveLockContentType(contentType, stagePolicy) {
+  const lock = String(contentType || "").trim();
+  if (!lock) return "";
+  if (lock === "explainer") return "explainer";
+  if (!SHOWCASE_CATEGORY_IDS.has(lock)) return "";
+  const available = (stagePolicy?.availableShowcase || []).some((ct) => ct.id === lock);
+  return available ? lock : "";
+}
+
+function lockContentTypeLabel(lock, stagePolicy) {
+  if (lock === "explainer") return "观点讲解(explainer)";
+  const ct = (stagePolicy?.availableShowcase || []).find((c) => c.id === lock);
+  return ct ? `${ct.label}(${lock})` : lock;
+}
+
 // 选题库题材分类（drill-in 浏览）。以 contentType 为主轴：观点讲解细分 3 类、
 // 真实展示 5 类、活动 1 类。顺序即概览卡展示顺序。
 const TOPIC_CATEGORY_GROUPS = {
@@ -367,6 +428,25 @@ const SHOWCASE_CATEGORY_IDS = new Set([
   "faculty_course",
   "behind_scene",
 ]);
+
+// 题材 -> 形态亲和：动态/过程类天生适合视频，认知/资质类适合图文。
+// 一周计划据此让形态跟着题材走（而非按平台配额硬塞），平台再跟随形态。
+const VIDEO_FIRST_CONTENT_TYPES = new Set([
+  "class_record",
+  "student_growth",
+  "venue_env",
+  "behind_scene",
+]);
+
+function formatForContentType(contentType) {
+  return VIDEO_FIRST_CONTENT_TYPES.has(String(contentType || "")) ? "video" : "xhs_image";
+}
+
+function platformForFormat(format) {
+  return format === "video"
+    ? { platform: "抖音/视频号", format: "短视频" }
+    : { platform: "小红书", format: "图文" };
+}
 
 // 关键词启发式：从自由想法文本推断内容形态（科普讲解 explainer 或某个真实展示类）。
 const CONTENT_TYPE_KEYWORDS = [
@@ -514,6 +594,8 @@ function toStoredTopicEntry(raw, profile = {}, task = {}) {
     chainId: String(raw.chainId || "").trim(),
     parentQuestion: String(raw.parentQuestion || "").trim(),
     reason: String(raw.reason || "").trim(),
+    campaignId: String(raw.campaignId || "").trim(),
+    campaignTitle: String(raw.campaignTitle || "").trim(),
     tags: Array.isArray(raw.tags) ? raw.tags.map(String) : [],
     source: normalizeTopicSource(raw.source),
     status: raw.status === "archived" ? "archived" : "active",
@@ -566,7 +648,7 @@ async function saveTopicLibrary(library) {
     updatedAt: new Date().toISOString(),
     entries: (library.entries || []).map((entry) => toStoredTopicEntry(entry)),
   };
-  await writeFile(topicLibraryPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  await atomicWriteJson(topicLibraryPath, payload);
   return payload;
 }
 
@@ -590,6 +672,8 @@ function mergeTopicsIntoLibrary(existingEntries = [], incomingTopics = [], profi
         produceCount: Math.max(Number(existing.produceCount) || 0, Number(next.produceCount) || 0),
         lastProducedAt: existing.lastProducedAt || next.lastProducedAt || "",
         referenceId: next.referenceId || existing.referenceId || "",
+        campaignId: next.campaignId || existing.campaignId || "",
+        campaignTitle: next.campaignTitle || existing.campaignTitle || "",
         usedInPlanSlots: next.usedInPlanSlots?.length
           ? next.usedInPlanSlots
           : (existing.usedInPlanSlots || []),
@@ -656,6 +740,9 @@ function makeFinishedId(raw = {}) {
 
 function normalizeFinishedItem(raw = {}) {
   const now = new Date().toISOString();
+  const slotIndex = raw.slotIndex === null || raw.slotIndex === undefined || raw.slotIndex === ""
+    ? null
+    : Number(raw.slotIndex);
   return {
     id: makeFinishedId(raw),
     topicId: raw.topicId || "",
@@ -663,8 +750,17 @@ function normalizeFinishedItem(raw = {}) {
     format: raw.format || "",
     contentType: raw.contentType || "",
     category: raw.category || "",
+    planId: raw.planId || "",
+    planTitle: raw.planTitle || "",
+    slotIndex: Number.isInteger(slotIndex) ? slotIndex : null,
+    slotDay: raw.slotDay || "",
+    slotPlatform: raw.slotPlatform || "",
+    slotFormat: raw.slotFormat || "",
+    slotTopicTitle: raw.slotTopicTitle || "",
     material: raw.material || null,
     brief: raw.brief || null,
+    campaignId: raw.campaignId || "",
+    campaignTitle: raw.campaignTitle || "",
     createdAt: raw.createdAt || now,
     updatedAt: raw.updatedAt || now,
   };
@@ -692,7 +788,7 @@ async function saveFinishedContent(store) {
     updatedAt: new Date().toISOString(),
     items: (store.items || []).map((item) => normalizeFinishedItem(item)),
   };
-  await writeFile(finishedContentPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  await atomicWriteJson(finishedContentPath, payload);
   return payload;
 }
 
@@ -701,6 +797,7 @@ async function upsertFinishedItem(raw = {}) {
   const next = normalizeFinishedItem(raw);
   const items = store.items || [];
   const index = items.findIndex((item) => item.id === next.id);
+  const createdItem = index === -1;
   if (index === -1) {
     items.push(next);
   } else {
@@ -715,7 +812,8 @@ async function upsertFinishedItem(raw = {}) {
       updatedAt: new Date().toISOString(),
     };
   }
-  return saveFinishedContent({ ...store, items });
+  const saved = await saveFinishedContent({ ...store, items });
+  return { ...saved, createdItem };
 }
 
 async function deleteFinishedItem(id) {
@@ -725,22 +823,203 @@ async function deleteFinishedItem(id) {
   return true;
 }
 
-async function loadWeeklyPlan() {
+function makePlanId() {
+  return `plan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function derivePlanLabel(plan = {}, createdAt = new Date().toISOString()) {
+  const title = String(plan?.overview?.title || "一周计划").trim() || "一周计划";
+  const d = new Date(createdAt);
+  const stamp = Number.isNaN(d.getTime())
+    ? ""
+    : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return stamp ? `${title} · ${stamp}` : title;
+}
+
+async function readLegacyWeeklyPlan() {
   try {
     await access(weeklyPlanPath, constants.F_OK);
     const raw = JSON.parse(await readFile(weeklyPlanPath, "utf8"));
-    if (!raw || !raw.plan) return { updatedAt: null, plan: null };
+    if (!raw || !raw.plan) return null;
     return { updatedAt: raw.updatedAt || null, plan: raw.plan };
   } catch {
-    return { updatedAt: null, plan: null };
+    return null;
   }
 }
 
-async function saveWeeklyPlan(plan) {
-  await mkdir(path.dirname(weeklyPlanPath), { recursive: true });
-  const payload = { updatedAt: new Date().toISOString(), plan: plan || null };
-  await writeFile(weeklyPlanPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+async function loadWeeklyPlans() {
+  try {
+    await access(weeklyPlansPath, constants.F_OK);
+    const raw = JSON.parse(await readFile(weeklyPlansPath, "utf8"));
+    const plans = Array.isArray(raw?.plans) ? raw.plans.filter((entry) => entry && entry.plan) : [];
+    return { updatedAt: raw?.updatedAt || null, plans };
+  } catch {
+    // 首次：尝试迁移旧的单份 weekly-plan.json。
+    const legacy = await readLegacyWeeklyPlan();
+    if (legacy?.plan) {
+      const createdAt = legacy.updatedAt || new Date().toISOString();
+      const migrated = {
+        updatedAt: createdAt,
+        plans: [{
+          id: makePlanId(),
+          createdAt,
+          label: derivePlanLabel(legacy.plan, createdAt),
+          plan: legacy.plan,
+        }],
+      };
+      try { await saveWeeklyPlans(migrated.plans); } catch { /* best effort */ }
+      return migrated;
+    }
+    return { updatedAt: null, plans: [] };
+  }
+}
+
+async function saveWeeklyPlans(plans) {
+  await mkdir(path.dirname(weeklyPlansPath), { recursive: true });
+  const payload = { updatedAt: new Date().toISOString(), plans: Array.isArray(plans) ? plans : [] };
+  await atomicWriteJson(weeklyPlansPath, payload);
   return payload;
+}
+
+async function createWeeklyPlanEntry(plan) {
+  const { plans } = await loadWeeklyPlans();
+  const createdAt = new Date().toISOString();
+  const entry = { id: makePlanId(), createdAt, label: derivePlanLabel(plan, createdAt), plan: plan || null };
+  const next = [entry, ...plans];
+  await saveWeeklyPlans(next);
+  return { entry, plans: next };
+}
+
+async function updateWeeklyPlanEntry(id, plan) {
+  const { plans } = await loadWeeklyPlans();
+  let updated = null;
+  const next = plans.map((entry) => {
+    if (entry.id !== id) return entry;
+    updated = { ...entry, plan: plan || entry.plan };
+    return updated;
+  });
+  if (!updated) return { entry: null, plans };
+  await saveWeeklyPlans(next);
+  return { entry: updated, plans: next };
+}
+
+async function deleteWeeklyPlanEntry(id) {
+  const { plans } = await loadWeeklyPlans();
+  const next = plans.filter((entry) => entry.id !== id);
+  await saveWeeklyPlans(next);
+  return { plans: next };
+}
+
+function makeCommunityPlanId() {
+  return `cmty-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function deriveCommunityLabel(plan = {}, createdAt = new Date().toISOString()) {
+  const groupLabel = String(plan?.overview?.groupLabel || "社群方案").trim() || "社群方案";
+  const d = new Date(createdAt);
+  const stamp = Number.isNaN(d.getTime())
+    ? ""
+    : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return stamp ? `${groupLabel} · ${stamp}` : groupLabel;
+}
+
+async function loadCommunityPlans() {
+  try {
+    await access(communityPlansPath, constants.F_OK);
+    const raw = JSON.parse(await readFile(communityPlansPath, "utf8"));
+    const plans = Array.isArray(raw?.plans) ? raw.plans.filter((entry) => entry && entry.plan) : [];
+    return { updatedAt: raw?.updatedAt || null, plans };
+  } catch {
+    return { updatedAt: null, plans: [] };
+  }
+}
+
+async function saveCommunityPlans(plans) {
+  await mkdir(path.dirname(communityPlansPath), { recursive: true });
+  const payload = { updatedAt: new Date().toISOString(), plans: Array.isArray(plans) ? plans : [] };
+  await atomicWriteJson(communityPlansPath, payload);
+  return payload;
+}
+
+async function createCommunityPlanEntry({ plan, groupType, planId, planTitle } = {}) {
+  const { plans } = await loadCommunityPlans();
+  const createdAt = new Date().toISOString();
+  const entry = {
+    id: makeCommunityPlanId(),
+    createdAt,
+    label: deriveCommunityLabel(plan, createdAt),
+    groupType: groupType || plan?.overview?.groupType || "prospect_parents",
+    groupLabel: plan?.overview?.groupLabel || "",
+    planId: planId || "",
+    planTitle: planTitle || "",
+    plan: plan || null,
+  };
+  const next = [entry, ...plans].slice(0, 100);
+  await saveCommunityPlans(next);
+  return { entry, plans: next };
+}
+
+async function deleteCommunityPlanEntry(id) {
+  const { plans } = await loadCommunityPlans();
+  const next = plans.filter((entry) => entry.id !== id);
+  await saveCommunityPlans(next);
+  return { plans: next };
+}
+
+function makeCampaignPlanId() {
+  return `cmpn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function deriveCampaignLabel(plan = {}, createdAt = new Date().toISOString()) {
+  const title = String(plan?.overview?.title || "活动方案").trim() || "活动方案";
+  const d = new Date(createdAt);
+  const stamp = Number.isNaN(d.getTime())
+    ? ""
+    : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return stamp ? `${title} · ${stamp}` : title;
+}
+
+async function loadCampaignPlans() {
+  try {
+    await access(campaignPlansPath, constants.F_OK);
+    const raw = JSON.parse(await readFile(campaignPlansPath, "utf8"));
+    const plans = Array.isArray(raw?.plans) ? raw.plans.filter((entry) => entry && entry.plan) : [];
+    return { updatedAt: raw?.updatedAt || null, plans };
+  } catch {
+    return { updatedAt: null, plans: [] };
+  }
+}
+
+async function saveCampaignPlans(plans) {
+  await mkdir(path.dirname(campaignPlansPath), { recursive: true });
+  const payload = { updatedAt: new Date().toISOString(), plans: Array.isArray(plans) ? plans : [] };
+  await atomicWriteJson(campaignPlansPath, payload);
+  return payload;
+}
+
+async function createCampaignPlanEntry({ plan, brief, planId, planTitle } = {}) {
+  const { plans } = await loadCampaignPlans();
+  const createdAt = new Date().toISOString();
+  const entry = {
+    id: makeCampaignPlanId(),
+    createdAt,
+    label: deriveCampaignLabel(plan, createdAt),
+    brief: brief || "",
+    typeLabel: plan?.overview?.typeLabel || "",
+    planId: planId || "",
+    planTitle: planTitle || "",
+    plan: plan || null,
+  };
+  const next = [entry, ...plans].slice(0, 100);
+  await saveCampaignPlans(next);
+  return { entry, plans: next };
+}
+
+async function deleteCampaignPlanEntry(id) {
+  const { plans } = await loadCampaignPlans();
+  const next = plans.filter((entry) => entry.id !== id);
+  await saveCampaignPlans(next);
+  return { plans: next };
 }
 
 function syncUsedInPlanSlots(entries = [], plan) {
@@ -834,6 +1113,8 @@ async function buildTopicLibraryView(profile, task = {}, options = {}) {
       contentType: String(entry.contentType || "").trim(),
       chainId: String(entry.chainId || "").trim(),
       contentGoal: String(entry.contentGoal || "").trim(),
+      campaignId: String(entry.campaignId || "").trim(),
+      campaignTitle: String(entry.campaignTitle || "").trim(),
       category: category.id,
       categoryLabel: category.label,
       categoryGroup: category.group,
@@ -979,7 +1260,7 @@ async function saveAiSettings(incoming = {}) {
   });
 
   await mkdir(path.dirname(aiSettingsPath), { recursive: true });
-  await writeFile(aiSettingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+  await atomicWriteJson(aiSettingsPath, settings);
   return settings;
 }
 
@@ -1132,8 +1413,12 @@ function listText(items) {
   return Array.isArray(items) && items.length ? items.join("、") : "待补充";
 }
 
-function firstAvailable(value, fallback) {
-  return String(value || "").trim() || fallback;
+function firstAvailable(...values) {
+  for (const value of values) {
+    const text = String(value ?? "").trim();
+    if (text) return text;
+  }
+  return "";
 }
 
 function inferPrimaryGoal(task = {}) {
@@ -1778,7 +2063,12 @@ async function buildIdeaTopicWithAi(profile, idea) {
   }
 }
 
-function agentRouteMessages(profile, message, framework, context = {}) {
+function agentRouteMessages(profile, message, framework, context = {}, history = []) {
+  // 把历史对话作为额外的 messages 插入（system 之后、user 之前），让分类器看到上下文
+  const historyMessages = (history || []).map((h) => ({
+    role: h.role === "assistant" ? "assistant" : "user",
+    content: String(h.text || "").slice(0, 400),
+  }));
   return [
     {
       role: "system",
@@ -1787,17 +2077,22 @@ function agentRouteMessages(profile, message, framework, context = {}) {
         "可用能力（intent）：",
         "- plan：想要一周内容计划 / 排期 / 发布节奏。",
         "- topic：想要选题方向 / 拍什么 / 内容角度。",
-        "- content：想把某条选题做成具体的小红书图文或短视频脚本（注意：这一步只是入口，真正生产在内容模块里）。",
-        "- chat：其他经营咨询或闲聊，不触发上面三个生成流程。",
+        "- content：想把某个想法或某条已有选题做成具体内容（小红书图文 / 短视频脚本 / 朋友圈）。这时要解析出：contentIdea（要做成内容的一句话想法）、targetFormat（用户点名的形态，没点名留空）、libraryRef（用户若指『选题库里那条 / 第N条 / 关于XX的那条』，给出匹配关键词或序号，否则 null）。真正的内容会在主面板的内容工作台里生成。",
+        "- campaign：想策划一个活动 / 活动方案 / 活动创意 / 体验课玩法 / 开业活动 / 亲子活动。真正的活动方案会在主面板生成。",
+        "- chat：其他经营咨询或闲聊，不触发上面四个生成流程。",
         "判定 chat 时再细分 chatKind：",
         "- advice：与这家球场经营相关（招生、定价思路、活动点子、同城竞争、家长沟通、续费留存、运营节奏等）。这时你要以「懂这家球场的运营顾问」身份，结合 venueProfile 给具体、可落地的建议；如果建议天然能接回某个能力，就在 suggestedAction 里给出（如帮忙排一周计划或出几条选题）。",
         "- offtopic：与球场经营无关（写代码、查天气、通用闲聊等）。一句话礼貌收边，并把话题拉回经营，不要展开。",
         "硬约束：遵守 contentRules.forbiddenFraming 与 profile.avoid——不承诺提分/升学/效果，不贴阶层标签，不编造价格、开放时间、师生比、学员案例；涉及这些不确定信息时，说「这取决于你们实际安排」而不是替运营者编造。",
         "当 intent 是 plan 或 topic 时，顺便把这句话解析成 generationBrief 和 generationMode（balanced=日常养号 / focused=活动聚焦 / hybrid=活动+认知兼顾）；信息不足时用 clarify 列最多 3 个追问。",
         "reply 始终必填：chat 时是你的正式回答，其他 intent 时是一句过渡确认语。",
+        "【上下文感知】用户最后一句话如果是「接着问 / 调整 / 评价 / 解释 / 继续 / 怎么看 / 为什么 / 怎么改 / 不太行 / 再来」等跟问性质的话，**必须读上面 history 来理解他在说什么**，不要因为新一句里没有 plan/topic/content/campaign 关键词就猜错。",
+        "【chat 优先】只有当用户的最新一句话本身就是一个明确的新任务时（如「帮我排下周计划」「出 5 个选题」「策划一场开业活动」），才走 plan/topic/content/campaign。问「为什么」「怎么调」「谈谈」「这样行吗」「家长会问什么」这类 → 永远是 chat/advice。",
+        "【非功能对话示例】这些是 chat 不是功能：「这个方案为什么不太好」「家长最关心什么」「价格怎么定合适」「我应该先做社群还是先做内容」「开业前一个月怎么安排」「如果效果不好怎么办」「你觉得呢」「为什么」",
         "输出必须是严格 JSON，不要 Markdown，不要解释。",
       ].join("\n"),
     },
+    ...historyMessages,
     {
       role: "user",
       content: JSON.stringify({
@@ -1807,9 +2102,10 @@ function agentRouteMessages(profile, message, framework, context = {}) {
         context: {
           currentResultType: context.currentResultType || null,
         },
+        history: historyMessages.map((m) => ({ role: m.role, text: m.content })),
         userMessage: String(message || ""),
         requiredShape: {
-          intent: "plan|topic|content|chat",
+          intent: "plan|topic|content|campaign|chat",
           chatKind: "advice|offtopic（仅 intent=chat 时有效，否则留空）",
           generationMode: "balanced|focused|hybrid（plan/topic 时）",
           generationBrief: {
@@ -1820,15 +2116,23 @@ function agentRouteMessages(profile, message, framework, context = {}) {
             preferredPlatforms: ["xhs|douyin|video|moments|group|dm"],
             toneOverride: "string或null",
           },
+          contentIdea: "string（仅 intent=content 时，要做成内容的一句话；否则留空）",
+          targetFormat: "xhs_image|video|moments_text|null（仅 intent=content 时；用户没点名形态就 null）",
+          libraryRef: { match: "string（标题关键词，没引用就空）", ordinal: "number或null（第几条）" },
+          campaignBrief: "string（仅 intent=campaign 时，保留用户对活动的原始目标/类型/约束；否则留空）",
           clarify: ["string，最多3条"],
           reply: "string",
-          suggestedAction: { type: "plan|topic|content", label: "string" },
+          suggestedAction: { type: "plan|topic|content|campaign", label: "string" },
         },
         constraints: [
           "preferredPlatforms 只用 xhs、douyin、video、moments、group、dm。",
           "纯养号/无明确活动时 generationMode=balanced 且 theme 可为空。",
           "intent=chat 时 generationBrief 用 null；intent!=chat 时 chatKind 留空、suggestedAction 用 null。",
           "advice 类回答要落到这家球场的实际定位与人群，不要泛泛而谈。",
+          "targetFormat 只能是 xhs_image、video、moments_text 之一或 null；小红书/图文->xhs_image，短视频/视频/抖音->video，朋友圈->moments_text。",
+          "intent!=content 时 contentIdea 留空、targetFormat 用 null、libraryRef 用 null。",
+          "intent!=campaign 时 campaignBrief 留空。",
+          "如果 history 里刚刚走过 plan/topic/content/campaign，而用户最新一句没有新任务词（如「帮我做 / 给我 / 排一个 / 出 X 条 / 策划」），优先 chat/advice 续聊。",
         ],
         outputNote: "只返回 JSON。",
       }),
@@ -1836,12 +2140,45 @@ function agentRouteMessages(profile, message, framework, context = {}) {
   ];
 }
 
+function normalizeTargetFormat(value) {
+  return ["xhs_image", "video", "moments_text"].includes(value) ? value : null;
+}
+
+function inferTargetFormatFromText(text) {
+  if (/短视频|视频|抖音|视频号/.test(text)) return "video";
+  if (/朋友圈/.test(text)) return "moments_text";
+  if (/小红书|图文|帖子/.test(text)) return "xhs_image";
+  return null;
+}
+
+function normalizeLibraryRef(value) {
+  if (!value || typeof value !== "object") return null;
+  const match = String(value.match || "").trim();
+  const ordinal = Number.isFinite(value.ordinal) ? Math.trunc(value.ordinal) : null;
+  if (!match && !ordinal) return null;
+  return { match, ordinal };
+}
+
 function buildAgentRouteFallback(message) {
   const text = String(message || "");
   const planHit = /计划|排期|一周|周计划|发什么|怎么发|节奏|日程/.test(text);
   const topicHit = /选题|方向|题目|拍什么|内容角度|出几条|做几条/.test(text);
   const contentHit = /脚本|帖子|做成|生产内容|图文|短视频/.test(text) && /做成|生成|帮我写|脚本/.test(text);
+  const campaignHit = /(策划|方案|活动点子|活动创意|活动玩法|活动主题|活动怎么做|做个活动|设计一个活动|办个活动)/.test(text)
+    && /活动|体验课|开业|亲子|成人|新手|招生|报名|节假日|寒假|暑假|比赛|公开课/.test(text);
   const isEvent = /活动|营|开业|体验课|报名|招生|节|赛/.test(text);
+  if (campaignHit) {
+    return {
+      intent: "campaign",
+      chatKind: "",
+      generationMode: "focused",
+      generationBrief: null,
+      campaignBrief: text.trim(),
+      clarify: [],
+      reply: "好的，这就帮你策划活动方案。",
+      suggestedAction: null,
+    };
+  }
   if (planHit) {
     return {
       intent: "plan",
@@ -1870,8 +2207,11 @@ function buildAgentRouteFallback(message) {
       chatKind: "",
       generationMode: "balanced",
       generationBrief: null,
+      contentIdea: text.trim(),
+      targetFormat: inferTargetFormatFromText(text),
+      libraryRef: null,
       clarify: [],
-      reply: "可以，先选好要落地的选题，我带你进内容生产。",
+      reply: "好的，这就带你进内容生产。",
       suggestedAction: null,
     };
   }
@@ -1880,36 +2220,92 @@ function buildAgentRouteFallback(message) {
     chatKind: "advice",
     generationMode: "balanced",
     generationBrief: null,
+    campaignBrief: "",
     clarify: [],
     reply: "我可以帮你排一周计划、生成选题方向，也能聊聊招生、活动、家长沟通这些经营问题。你想先从哪块开始？",
     suggestedAction: null,
   };
 }
 
-async function buildAgentRoute(profile, message, context = {}) {
+// 检测「明显是接着问 / 聊一聊」的用户输入——不触发功能意图，走 chat
+// 命中条件任一：
+//   1) 文本很短（≤18 字）且包含跟问性质词（为什么/怎么/能行/怎么样/调整/改/再/继续/再来/不太行/谈谈/说说/觉得/解释/讲讲/聊聊/然后呢/还有呢/下一步）
+//   2) 文本以「那/那这个/那这条/这个/这条/它/它俩/这个方案/这个计划」等指代词开头（明显是接着上条说）
+//   3) 文本中含「家长/价格/招生/续费/话术/同行/对比/经验/心得/问题/困难」等纯经营问题词（不是任务动词）
+const FOLLOW_UP_PATTERNS = [
+  /^(为什么|怎么|能行|怎么样|怎么调|怎么改|再|继续|再来|不太行|谈谈|说说|觉得|解释|讲讲|聊聊|然后呢|还有呢|下一步|好不好|行不行|值不值|可以么|对不对)/,
+  /^(那|那这个|那这条|这个|这条|它|它俩|刚才|之前|上面|上面那个|这条方案|这个方案|这个计划|这条计划)/,
+  /^(帮我|给我|再帮|再给)?\s*(调整|改|优化|改写|改一下|改短|改长)/,
+  /^(效果|学员|家长|价格|续费|招生|话术|开学|开业前|开业后|活动后|活动前|寒暑假|周末|淡季|旺季).*(怎么办|怎么样|好不好|行不行|能行吗)/,
+  /(我应该|要不要|该不该|先.{0,6}还是|还是先|怎么选)/,
+];
+const ADVICE_TOPIC_PATTERNS = /(家长|价格|定价|招生|续费|话术|同行|竞争|对比|经验|心得|困难|问题|挑战|踩过|复盘|反思|担心|焦虑|觉得|看法|建议|意见)/;
+const TASK_VERB = /(帮我|给我|请|麻烦|能不能|可不可以|想让你|想请|排\s*一?个|排\s*下周|排\s*下个月|出\s*\d+\s*条|策划|生成|做一篇|写一篇|设计一个|做一条|出个|出几个|出个方案|给个|给一|帮我出)/;
+function looksLikeFollowUp(message, history = []) {
+  const text = String(message || "").trim();
+  if (!text) return false;
+  // 0) 有明确任务动词 → 不是跟问
+  if (TASK_VERB.test(text)) return false;
+  // 1) 跟问性质（前缀匹配）
+  if (FOLLOW_UP_PATTERNS.some((re) => re.test(text))) return true;
+  // 2) 包含「怎么/为什么/如何」且无任务动词 → 经营问题
+  if (/(怎么|为什么|如何|怎样|啥样)/.test(text) && text.length <= 30) return true;
+  // 3) 短问题 + 经营话题词
+  if (text.length <= 22 && ADVICE_TOPIC_PATTERNS.test(text)) return true;
+  // 4) 有历史 + 短问题 + 无任务动词
+  if (history.length >= 1 && text.length <= 16 && !/(请|帮|生成|排|出\s*\d+|策划|做|写|设计)/.test(text)) return true;
+  return false;
+}
+
+// 在历史已知时，给一个"接着聊"的中性回复（chat/advice）
+// 不调 AI（避免在没 LLM 情况下阻塞），用模板回复。AI 路径仍会覆盖它。
+function buildChatReplyFromHistory(message, history, profile) {
+  return {
+    intent: "chat",
+    chatKind: "advice",
+    generationMode: "balanced",
+    generationBrief: null,
+    campaignBrief: "",
+    clarify: [],
+    reply: "好的，我接着说——你想往哪个方向聊：是活动节奏、家长沟通、定价思路，还是继续把刚才那个方案调一下？",
+    suggestedAction: null,
+  };
+}
+
+async function buildAgentRoute(profile, message, context = {}, history = []) {
   const framework = await loadAngleFramework();
   const settings = await loadAiSettings();
   const resolved = resolveAiProvider(settings);
-  let result = buildAgentRouteFallback(message);
+  // 如果用户最后一句明显是「接着问」/「聊一聊」(不是新任务)，优先走 chat
+  const followUpHint = looksLikeFollowUp(message, history);
+  let result = followUpHint
+    ? buildChatReplyFromHistory(message, history, profile)
+    : buildAgentRouteFallback(message);
   let aiMeta = buildLocalAiMeta(settings);
 
   if (resolved) {
     const { provider, config } = resolved;
     const providerLabel = providerDefaults[provider]?.label || provider;
     try {
-      const text = await callAiText(provider, config, agentRouteMessages(profile, message, framework, context));
+      const text = await callAiText(provider, config, agentRouteMessages(profile, message, framework, context, history));
       const data = extractJson(text);
       if (!data || typeof data !== "object") throw new Error("AI 返回结构不完整");
-      const intent = ["plan", "topic", "content", "chat"].includes(data.intent) ? data.intent : result.intent;
+      const intent = ["plan", "topic", "content", "campaign", "chat"].includes(data.intent) ? data.intent : result.intent;
       const isChat = intent === "chat";
-      const suggested = data.suggestedAction && ["plan", "topic", "content"].includes(data.suggestedAction.type)
+      const suggested = data.suggestedAction && ["plan", "topic", "content", "campaign"].includes(data.suggestedAction.type)
         ? { type: data.suggestedAction.type, label: String(data.suggestedAction.label || "").trim() || "去生成" }
         : null;
+      const isContent = intent === "content";
+      const isCampaign = intent === "campaign";
       result = {
         intent,
         chatKind: isChat ? (["advice", "offtopic"].includes(data.chatKind) ? data.chatKind : "advice") : "",
         generationMode: ["balanced", "focused", "hybrid"].includes(data.generationMode) ? data.generationMode : result.generationMode,
-        generationBrief: isChat ? null : normalizeBrief(data.generationBrief),
+        generationBrief: (isChat || isCampaign) ? null : normalizeBrief(data.generationBrief),
+        campaignBrief: isCampaign ? String(data.campaignBrief || message || "").trim() : "",
+        contentIdea: isContent ? String(data.contentIdea || "").trim() : "",
+        targetFormat: isContent ? normalizeTargetFormat(data.targetFormat) : null,
+        libraryRef: isContent ? normalizeLibraryRef(data.libraryRef) : null,
         clarify: Array.isArray(data.clarify) ? data.clarify.map(String).slice(0, 3) : [],
         reply: String(data.reply || "").trim() || result.reply,
         suggestedAction: isChat ? suggested : null,
@@ -1992,10 +2388,13 @@ function normalizeBrief(brief) {
   const arr = (value) => (Array.isArray(value) ? value.map((item) => String(item).trim()).filter(Boolean) : []);
   const theme = String(brief.theme || "").trim();
   const mustCover = arr(brief.mustCover);
-  if (!theme && !mustCover.length && !String(brief.primaryGoal || "").trim()) return null;
+  const rawContentType = String(brief.contentType || "").trim();
+  const contentType = (rawContentType === "explainer" || SHOWCASE_CATEGORY_IDS.has(rawContentType)) ? rawContentType : "";
+  if (!theme && !mustCover.length && !String(brief.primaryGoal || "").trim() && !contentType) return null;
   return {
     theme,
     primaryGoal: String(brief.primaryGoal || "").trim(),
+    contentType,
     mustCover,
     mustAvoid: arr(brief.mustAvoid),
     preferredPlatforms: arr(brief.preferredPlatforms).filter((id) => topicFieldOptions.platforms.includes(id)),
@@ -2029,6 +2428,742 @@ function planSummaryForPrompt(plan) {
     focus: plan.overview?.focus,
     strategySummary: plan.overview?.strategySummary || plan.strategy?.strategySummary,
     pillars: (plan.pillars || []).map((item) => item.label),
+  };
+}
+
+function campaignTypeFromBrief(brief = "") {
+  const text = String(brief || "");
+  if (/开业|试营业|新店/.test(text)) return { id: "opening", label: "开业体验活动", audience: "附近少儿家长、成人新手和附近球友", goal: "建立第一批到场体验与私域咨询" };
+  if (/亲子|家庭|家长孩子/.test(text)) return { id: "family", label: "亲子网球日", audience: "4-12 岁孩子及家长", goal: "降低家长观望成本，制造家庭共同体验" };
+  if (/成人|新手|零基础|约球/.test(text)) return { id: "adult", label: "成人新手体验局", audience: "附近成人新手和轻运动人群", goal: "把兴趣用户转成第一次到场体验" };
+  if (/暑假|寒假|节假日|周末|儿童节|国庆|五一/.test(text)) return { id: "seasonal", label: "节假日主题活动", audience: "有假期运动安排需求的家庭", goal: "用阶段性主题集中获取体验意向" };
+  if (/招生|报名|体验课|公开课|少儿|孩子/.test(text)) return { id: "junior", label: "少儿体验课活动", audience: "正在比较兴趣班的少儿家长", goal: "让家长看清第一次体验的流程和边界" };
+  return { id: "daily", label: "日常拉新活动", audience: "附近潜在用户和已咨询未到场用户", goal: "用低门槛活动激活咨询与到场" };
+}
+
+function normalizeCampaignList(value, fallback = []) {
+  if (!Array.isArray(value)) return fallback;
+  return value.map((item) => {
+    if (typeof item === "string") return item.trim();
+    if (!item || typeof item !== "object") return null;
+    return item;
+  }).filter(Boolean);
+}
+
+function buildCampaignFallback(profile, task = {}) {
+  const brief = firstAvailable(task.campaignBrief, task.eventInfo, task.focus, "日常拉新活动");
+  const type = campaignTypeFromBrief(brief);
+  const venue = firstAvailable(profile.shortName, profile.name, "球场");
+  const planThemes = normalizeCampaignList(task.planContext?.themes).slice(0, 3);
+  const titleMap = {
+    opening: `${venue}开业体验日`,
+    family: `${venue}亲子网球日`,
+    adult: `${venue}成人新手体验局`,
+    seasonal: `${venue}假期网球体验日`,
+    junior: `${venue}少儿网球体验课`,
+    daily: `${venue}轻体验活动`,
+  };
+  const title = titleMap[type.id] || `${venue}体验活动`;
+  const coreIdea = type.id === "opening"
+    ? "先让用户真实看见场地、流程和咨询入口，用轻体验建立第一批到场关系。"
+    : type.id === "family"
+      ? "让孩子动起来、让家长看清流程，用亲子共同参与降低第一次尝试门槛。"
+      : type.id === "adult"
+        ? "把「不会打」转成「可以先试一次」，用友好分组和基础体验降低心理压力。"
+        : "用一个清晰主题把关注、私信、到场体验串成一条短路径。";
+
+  return {
+    overview: {
+      title,
+      typeLabel: type.label,
+      audience: type.audience,
+      goal: type.goal,
+      coreIdea,
+      whyNow: planThemes.length ? `可承接本周内容主题：${planThemes.join("、")}。` : "适合在日常运营中制造一次明确的到场理由。",
+    },
+    conceptCards: [
+      { title: "先看场地再体验", angle: "用场地动线、器材、教练介绍降低陌生感。", suitableFor: "开业/试营业/第一次曝光" },
+      { title: "30分钟轻体验", angle: "不强调学会，只强调安全、好玩、知道自己适不适合。", suitableFor: "新手和少儿家长" },
+      { title: "小范围邀请制", angle: "控制人数，便于服务和后续私聊跟进。", suitableFor: "私域和社群转化" },
+    ],
+    eventFlow: [
+      { phase: "报名前", time: "活动前 3-5 天", action: "发布活动预告，收集姓名、年龄/水平、可到场时间。", notes: "不写未确认价格、名额和开放时间。" },
+      { phase: "到场签到", time: "0-10 分钟", action: "确认人数，简单介绍场地和安全注意事项。", notes: "拍摄场地、器材、准备动作等真实素材。" },
+      { phase: "体验环节", time: "10-40 分钟", action: "按年龄或水平做基础击球、移动和小游戏体验。", notes: "孩子以趣味为主，成人以低门槛为主。" },
+      { phase: "答疑转化", time: "40-55 分钟", action: "讲清后续体验/预约方式，统一收集问题。", notes: "不承诺训练效果，只说明实际安排。" },
+      { phase: "活动后跟进", time: "当天晚上", action: "私聊发送照片/反馈/下一步预约入口。", notes: "高意向单独跟进，普通意向进社群沉淀。" },
+    ],
+    offerDesign: [
+      { name: "到场体验名额", value: "让用户先完成第一次到场，不把门槛设得太高。", constraint: "名额、时间、费用按实际安排填写。" },
+      { name: "咨询福利", value: "到场后可获得一次课程/约球安排说明。", constraint: "不写夸张优惠和效果承诺。" },
+    ],
+    contentHooks: [
+      { channel: "小红书", hook: `${title}适合什么人来？`, format: "图文/短视频" },
+      { channel: "抖音/视频号", hook: "第一次来球场会经历什么？", format: "20-35s 展示类视频" },
+      { channel: "朋友圈", hook: "这周我们想先邀请一小批朋友来体验", format: "轻邀请文字" },
+      { channel: "社群", hook: "报名接龙 + 常见问题集中答疑", format: "群公告/互动问答" },
+    ],
+    conversionPath: [
+      { step: "看到内容", action: "用户通过场地展示或活动预告知道活动。", message: "评论/私信关键词：体验" },
+      { step: "进入私域", action: "确认年龄、水平、可到场时间。", message: "发活动须知和到场提醒" },
+      { step: "到场体验", action: "完成一次真实体验和答疑。", message: "活动后私聊下一步安排" },
+    ],
+    preparation: [
+      { item: "活动时间与人数上限", owner: "运营/负责人", deadline: "活动前 5 天" },
+      { item: "报名表单或私聊登记话术", owner: "运营", deadline: "活动前 4 天" },
+      { item: "现场拍摄清单", owner: "内容负责人", deadline: "活动前 2 天" },
+      { item: "活动后跟进话术", owner: "私域运营", deadline: "活动当天" },
+    ],
+    riskNotes: [
+      "不承诺孩子一定爱上网球、一定进步或升学加分。",
+      "价格、名额、时间、开放范围必须按实际确认后再发布。",
+      "涉及儿童照片和视频需获得家长同意。",
+    ],
+    nextActions: [
+      "确认活动时间、人数上限和是否收费。",
+      "把活动方案转成 3-5 条公域选题。",
+      "为意向家长群准备报名接龙和答疑话术。",
+    ],
+  };
+}
+
+function campaignMessages(profile, task, fallbackPlan, framework) {
+  return [
+    {
+      role: "system",
+      content: [
+        "你是网球场活动策划顾问。请为这家球场策划一个可执行的活动方案。",
+        "活动策划可以有创意，但必须落到真实球场可执行：目标人群、活动主张、现场流程、报名转化、内容传播、准备清单。",
+        "不要使用空泛口号，不要编造价格、开放时间、师资案例、学员反馈、升学或训练效果。",
+        "输出必须是严格 JSON，不要 Markdown，不要解释。",
+      ].join("\n"),
+    },
+    {
+      role: "user",
+      content: JSON.stringify({
+        taskType: "campaign_plan",
+        venueProfile: profileForPrompt(profile),
+        userBrief: task.campaignBrief || "",
+        weeklyInput: {
+          goal: goalLabels[task.goal] || task.goal || "",
+          focus: task.focus || "",
+          eventInfo: task.eventInfo || "",
+        },
+        currentWeeklyPlan: planSummaryForPrompt(task.plan),
+        planContext: task.planContext || null,
+        fallbackShapeExample: fallbackPlan,
+        contentRules: framework.contentRules || {},
+        requiredShape: {
+          overview: {
+            title: "string",
+            typeLabel: "string",
+            audience: "string",
+            goal: "string",
+            coreIdea: "string",
+            whyNow: "string",
+          },
+          conceptCards: [{ title: "string", angle: "string", suitableFor: "string" }],
+          eventFlow: [{ phase: "string", time: "string", action: "string", notes: "string" }],
+          offerDesign: [{ name: "string", value: "string", constraint: "string" }],
+          contentHooks: [{ channel: "string", hook: "string", format: "string" }],
+          conversionPath: [{ step: "string", action: "string", message: "string" }],
+          preparation: [{ item: "string", owner: "string", deadline: "string" }],
+          riskNotes: ["string"],
+          nextActions: ["string"],
+        },
+        constraints: [
+          "活动规模默认小而可控；如用户没有提供预算/人数/时间，不要替他编造具体数字，可写成待确认。",
+          "必须包含 3-5 个 contentHooks，覆盖小红书/短视频/朋友圈/社群中的至少 3 类。",
+          "活动后续要能接到选题生成和一周计划，因此标题、coreIdea、contentHooks 必须具体。",
+          "风险边界必须包含不承诺效果、不编造价格时间、儿童肖像授权。",
+        ],
+        outputNote: "只返回 JSON。",
+      }),
+    },
+  ];
+}
+
+function normalizeCampaignPlan(input, fallback, aiMeta) {
+  const data = input && typeof input === "object" ? input : {};
+  const overview = data.overview && typeof data.overview === "object" ? data.overview : {};
+  return {
+    overview: {
+      title: firstAvailable(overview.title, fallback.overview.title),
+      typeLabel: firstAvailable(overview.typeLabel, fallback.overview.typeLabel),
+      audience: firstAvailable(overview.audience, fallback.overview.audience),
+      goal: firstAvailable(overview.goal, fallback.overview.goal),
+      coreIdea: firstAvailable(overview.coreIdea, fallback.overview.coreIdea),
+      whyNow: firstAvailable(overview.whyNow, fallback.overview.whyNow),
+    },
+    conceptCards: normalizeCampaignList(data.conceptCards, fallback.conceptCards).slice(0, 5),
+    eventFlow: normalizeCampaignList(data.eventFlow, fallback.eventFlow).slice(0, 7),
+    offerDesign: normalizeCampaignList(data.offerDesign, fallback.offerDesign).slice(0, 4),
+    contentHooks: normalizeCampaignList(data.contentHooks, fallback.contentHooks).slice(0, 6),
+    conversionPath: normalizeCampaignList(data.conversionPath, fallback.conversionPath).slice(0, 5),
+    preparation: normalizeCampaignList(data.preparation, fallback.preparation).slice(0, 6),
+    riskNotes: normalizeCampaignList(data.riskNotes, fallback.riskNotes).slice(0, 5),
+    nextActions: normalizeCampaignList(data.nextActions, fallback.nextActions).slice(0, 5),
+    aiMeta,
+  };
+}
+
+async function buildCampaignPlanWithAi(profile, task = {}) {
+  const fallbackPlan = buildCampaignFallback(profile, task);
+  const settings = await loadAiSettings();
+  const resolved = resolveAiProvider(settings);
+  if (!resolved) {
+    return normalizeCampaignPlan(fallbackPlan, fallbackPlan, buildLocalAiMeta(settings));
+  }
+
+  const { provider, config } = resolved;
+  const providerLabel = providerDefaults[provider]?.label || provider;
+  try {
+    const framework = await loadAngleFramework();
+    const text = await callAiText(provider, config, campaignMessages(profile, task, fallbackPlan, framework));
+    const data = extractJson(text);
+    const aiMeta = { source: "ai", provider: providerLabel, model: config.model };
+    return normalizeCampaignPlan(data, fallbackPlan, aiMeta);
+  } catch (error) {
+    return normalizeCampaignPlan(fallbackPlan, fallbackPlan, {
+      source: "fallback",
+      provider: providerLabel,
+      model: config?.model || "",
+      error: error.message || "活动策划失败，已回退本地规则",
+    });
+  }
+}
+
+// ===== 活动方案 → 对外物料二次生成 =====
+// 6 类非社媒对外物料：海报文字 / 短信话术 / 邀请文案 / 报名接龙 / 答疑 FAQ / 家长须知
+const CAMPAIGN_MATERIAL_META = [
+  {
+    format: "campaign_poster",
+    label: "海报文字",
+    description: "朋友圈/电梯口/前台易拉宝：主标+副标+3-5 卖点+二维码引导位",
+  },
+  {
+    format: "campaign_invite",
+    label: "邀请文案",
+    description: "一对一私聊 / 老学员朋友圈定向邀约文字",
+  },
+  {
+    format: "campaign_signup",
+    label: "报名接龙",
+    description: "群内接龙模板 + 报名字段（姓名/年龄/到场时间/联系方式）",
+  },
+  {
+    format: "campaign_faq",
+    label: "答疑 FAQ",
+    description: "5-8 条家长可能问的问题 + 回答，覆盖时间/费用/年龄/着装/天气等",
+  },
+  {
+    format: "campaign_notice",
+    label: "家长须知",
+    description: "活动当天流程 + 注意事项 + 到场准备清单（可打印）",
+  },
+];
+
+const CAMPAIGN_MATERIAL_FORMAT_SET = new Set(CAMPAIGN_MATERIAL_META.map((m) => m.format));
+
+function campaignMaterialMeta(format) {
+  return CAMPAIGN_MATERIAL_META.find((m) => m.format === format) || null;
+}
+
+// 每种物料的"骨架"：heading 是强制展示的标题，maxBody 是 body 软上限（用于裁剪 AI 跑题的输出）
+// slotCount 表示 AI 应该返回几段。AI 多段 / 少段 / 改名都被后处理强制改回这个骨架。
+const CAMPAIGN_MATERIAL_CANONICAL = {
+  campaign_poster: {
+    slotCount: 7,
+    sections: [
+      { heading: "主标题（≤12 字）",          maxBody: 12,  truncation: "hard" },
+      { heading: "副标题 / Tagline（≤20 字）", maxBody: 20,  truncation: "soft" },
+      { heading: "活动亮点（1-2 句说清这是什么活动）", maxBody: 60, truncation: "soft" },
+      { heading: "时间 + 地点",                maxBody: 60,  truncation: "soft" },
+      { heading: "3 条卖点（bullet）",        maxBody: 120, truncation: "soft" },
+      { heading: "CTA + 二维码位",            maxBody: 80,  truncation: "soft" },
+      { heading: "视觉建议",                  maxBody: 120, truncation: "soft" },
+    ],
+    titleSuffix: "· 海报文字（1080×1920 竖版）",
+  },
+  campaign_invite: {
+    slotCount: 3,
+    sections: [
+      { heading: "开场（介绍自己）", maxBody: 60, truncation: "soft" },
+      { heading: "活动亮点",         maxBody: 80, truncation: "soft" },
+      { heading: "行动号召",         maxBody: 40, truncation: "soft" },
+    ],
+    titleSuffix: "· 邀请文案",
+  },
+  campaign_signup: {
+    slotCount: 5,
+    sections: [
+      { heading: "群公告（开群先发）", maxBody: 200, truncation: "soft" },
+      { heading: "报名字段",           maxBody: 120, truncation: "soft" },
+      { heading: "地址占位",           maxBody: 60,  truncation: "soft" },
+      { heading: "报名截止",           maxBody: 40,  truncation: "soft" },
+      { heading: "客服",               maxBody: 30,  truncation: "soft" },
+    ],
+    titleSuffix: "· 报名接龙",
+  },
+  campaign_faq: {
+    slotCount: 6,
+    sections: [
+      { heading: "Q1 时间",      maxBody: 60, truncation: "soft" },
+      { heading: "Q2 年龄",      maxBody: 60, truncation: "soft" },
+      { heading: "Q3 装备/着装", maxBody: 60, truncation: "soft" },
+      { heading: "Q4 收费/福利", maxBody: 60, truncation: "soft" },
+      { heading: "Q5 天气/改期", maxBody: 60, truncation: "soft" },
+      { heading: "Q6 家长陪同",  maxBody: 60, truncation: "soft" },
+    ],
+    titleSuffix: "· 答疑 FAQ",
+  },
+  campaign_notice: {
+    slotCount: 4,
+    sections: [
+      { heading: "时间",         maxBody: 60,  truncation: "soft" },
+      { heading: "地点",         maxBody: 60,  truncation: "soft" },
+      { heading: "到场流程",     maxBody: 200, truncation: "soft" },
+      { heading: "注意事项",     maxBody: 200, truncation: "soft" },
+    ],
+    titleSuffix: "· 家长须知",
+  },
+};
+
+// 后处理：把 AI 返回的 sections 强制改写为 canonical 骨架。
+// - heading 全部替换为 canonical 标题（用户看到的是稳定的标题）
+// - body 按 positional 取 AI 的前 N 段；不足则从 fallback 补；超出则合并到最后一槽
+// - maxBody 截断（hard=硬截断；soft=只在超长 2 倍以上时截断 + 省略号）
+// - title 强制按 canonical 重写（避免 AI 把标题写成 slogan）
+// - sanity 检查：若 AI 在某槽位的内容与"应该是什么"明显不符（如视觉建议槽出现"扫码"），用 fallback 替换
+function enforceCampaignMaterialStructure(format, aiMaterial, fallbackMaterial) {
+  const canon = CAMPAIGN_MATERIAL_CANONICAL[format];
+  if (!canon) {
+    return {
+      title: aiMaterial?.title || fallbackMaterial?.title || "",
+      sections: (aiMaterial?.sections || fallbackMaterial?.sections || []).map((s) => ({ heading: s.heading || "", body: String(s.body || "").trim() })),
+    };
+  }
+  const aiSections = Array.isArray(aiMaterial?.sections) ? aiMaterial.sections : [];
+  const fbSections = Array.isArray(fallbackMaterial?.sections) ? fallbackMaterial.sections : [];
+
+  // 按 positional 取 AI 的前 N 段
+  const collapsed = [];
+  for (let i = 0; i < canon.slotCount; i += 1) {
+    collapsed.push(String(aiSections[i]?.body || "").trim());
+  }
+  // 多余的 AI 段全部合并进 slot 3（CTA + 二维码位），不污染 slot 4（视觉建议）
+  if (aiSections.length > canon.slotCount) {
+    const extra = aiSections.slice(canon.slotCount).map((s) => String(s?.body || "").trim()).filter(Boolean);
+    if (extra.length) {
+      const ctaSlot = 3; // CTA + 二维码位
+      collapsed[ctaSlot] = collapsed[ctaSlot]
+        ? collapsed[ctaSlot] + "\n" + extra.join("\n")
+        : extra.join("\n");
+    }
+  }
+  // 不足时用 fallback 补
+  for (let i = 0; i < canon.slotCount; i += 1) {
+    if (!collapsed[i] && fbSections[i]?.body) collapsed[i] = String(fbSections[i].body).trim();
+  }
+  // sanity：视觉建议槽（slot 6 of campaign_poster）必须有视觉相关关键词，否则用 fallback
+  if (format === "campaign_poster") {
+    const visualSlot = 6;
+    const body = collapsed[visualSlot] || "";
+    if (body && !/(背景|主色|字体|视觉|色块|版式|布局)/.test(body) && fbSections[visualSlot]?.body) {
+      collapsed[visualSlot] = String(fbSections[visualSlot].body).trim();
+    }
+  }
+  // sanity：CTA 槽（slot 5 of campaign_poster）应包含明确的"行动/扫码"关键词，否则用 fallback
+  if (format === "campaign_poster" && collapsed[5]) {
+    if (!/(扫码|私信|回复|二维码|联系)/.test(collapsed[5]) && fbSections[5]?.body) {
+      collapsed[5] = String(fbSections[5].body).trim();
+    }
+  }
+  // 卖点 slot（slot 4 of campaign_poster）：过滤 social-hook 风格的 bullet（问句/纯流程描述/无价值点），然后补到 3 条
+  if (format === "campaign_poster" && collapsed[4]) {
+    const isHookLike = (b) => {
+      if (/[？?]/.test(b)) return true;
+      if (/(适合什么|什么人来|会经历什么|邀请.*来体验|怎么报名|常见问题|答疑|报名接龙|朋友圈|社群|小红书|抖音|视频号|群公告)/.test(b)) return true;
+      if (b.replace(/^[·\-\s]+/, "").length < 4) return true;
+      return false;
+    };
+    const bullets = collapsed[4].split(/\n+/).map((l) => l.trim()).filter(Boolean).filter((b) => !isHookLike(b));
+    if (bullets.length > 3) bullets.length = 3;
+    if (bullets.length < 3 && fbSections[4]?.body) {
+      const fbBullets = String(fbSections[4].body).split(/\n+/).map((l) => l.trim()).filter(Boolean).filter((b) => !isHookLike(b));
+      for (const b of fbBullets) {
+        if (bullets.length >= 3) break;
+        if (!bullets.includes(b)) bullets.push(b);
+      }
+    }
+    collapsed[4] = bullets.slice(0, 3).join("\n") || (fbSections[4]?.body || "");
+  }
+  // 活动亮点 slot（slot 2 of campaign_poster）：过滤运营/规划话术（"建立关系"/"拉新" 等），用 fallback
+  if (format === "campaign_poster" && collapsed[2]) {
+    const isOperational = (b) => /(建立.*关系|拉新|第一批到场|邀约|沉淀|留存|转化|私域|拉新引流|首单)/.test(b);
+    if (isOperational(collapsed[2]) && fbSections[2]?.body) {
+      collapsed[2] = String(fbSections[2].body).trim();
+    }
+  }
+  // 副标 slot（slot 1 of campaign_poster）：含运营话术时也用 fallback
+  if (format === "campaign_poster" && collapsed[1]) {
+    if (/(建立.*关系|拉新|第一批到场|沉淀|留存|私域|拉新引流|首单)/.test(collapsed[1]) && fbSections[1]?.body) {
+      collapsed[1] = String(fbSections[1].body).trim();
+    }
+  }
+  // 时间 + 地点 slot（slot 3 of campaign_poster）：必须含时间/地点关键词，否则用 fallback
+  if (format === "campaign_poster" && collapsed[3]) {
+    if (!/(时间|地点|周|月|日|号|上午|下午|场|待|前\s*\d+\s*天|群公告|地址|交通|停车|区|路|街)/.test(collapsed[3]) && fbSections[3]?.body) {
+      collapsed[3] = String(fbSections[3].body).trim();
+    }
+  }
+  // 邀请文案 3 段：开场/亮点/行动 都过滤运营话术
+  if (format === "campaign_invite") {
+    const isOperational = (b) => /(建立.*关系|拉新|第一批到场|邀约|沉淀|留存|转化|私域|拉新引流|首单|先把时间地点发您|我把时间地点)/.test(b);
+    [0, 1, 2].forEach((i) => {
+      if (collapsed[i] && isOperational(collapsed[i]) && fbSections[i]?.body) {
+        collapsed[i] = String(fbSections[i].body).trim();
+      }
+    });
+  }
+
+  // 按 maxBody 截断 + 应用 canonical heading
+  const out = canon.sections.map((slot, i) => {
+    let body = collapsed[i] || "";
+    const limit = slot.maxBody;
+    if (slot.truncation === "hard" && limit && body.length > limit) {
+      body = body.slice(0, limit).trimEnd();
+    } else if (slot.truncation === "soft" && limit && body.length > limit * 2) {
+      body = body.slice(0, limit).trimEnd() + "…";
+    }
+    return { heading: slot.heading, body };
+  });
+  // 强制 title：使用 fallback 模板生成的 title（保证有"· 物料名"后缀）
+  const baseTitle = (fallbackMaterial?.title || aiMaterial?.title || "")
+    .replace(/\s*[·・]\s*(海报文字|短信话术|邀请文案|报名接龙|答疑\s*FAQ|家长须知).*$/, "")
+    .trim();
+  const title = baseTitle ? `${baseTitle} ${canon.titleSuffix}` : (fallbackMaterial?.title || aiMaterial?.title || "");
+  return { title, sections: out };
+}
+
+function summarizeCampaignPlanForMaterials(plan = {}) {
+  const overview = plan.overview || {};
+  return {
+    title: overview.title || "",
+    typeLabel: overview.typeLabel || "",
+    audience: overview.audience || "",
+    goal: overview.goal || "",
+    coreIdea: overview.coreIdea || "",
+    whyNow: overview.whyNow || "",
+    eventFlow: Array.isArray(plan.eventFlow) ? plan.eventFlow : [],
+    offerDesign: Array.isArray(plan.offerDesign) ? plan.offerDesign : [],
+    contentHooks: Array.isArray(plan.contentHooks) ? plan.contentHooks : [],
+    conversionPath: Array.isArray(plan.conversionPath) ? plan.conversionPath : [],
+  };
+}
+
+function localCampaignPoster(profile, summary) {
+  const venue = firstAvailable(profile?.shortName, profile?.name, "球场");
+  const title = summary.title || `${venue}体验活动`;
+  const posterTitle = title.length > 12 ? title.slice(0, 12) : title;
+  // 副标：≤20 字定位,直接用 clean default（不能用 coreIdea——那是规划/运营语言）
+  const subtitle = "先来一次真实体验，再决定下一步".slice(0, 20);
+  // 活动亮点：1-2 句说清「这是什么样的活动」(家长视角,不是规划话术)
+  const typeLabel = summary.typeLabel || "体验活动";
+  const audience = summary.audience || "4-12 岁孩子及成人新手";
+  const highlightBody = `${venue} 真实场地、真实教练的${typeLabel}，30 分钟带${audience.replace(/\d+\s*-\s*\d+\s*岁.*/, "孩子").replace(/成人新手/, "新手")}完成一次击球、移动和小游戏体验。`;
+  // 时间 + 地点：未确定写"活动前 2 天群公告通知"
+  const timeBody = "· 时间：活动前 2 天群公告通知\n· 地点：活动前 2 天群公告通知";
+  // 卖点：家长可读的硬信息（受众 + 类型 + 福利）
+  const bullets = [];
+  if (summary.audience) bullets.push(`面向：${summary.audience}`);
+  if (summary.typeLabel) bullets.push(`类型：${summary.typeLabel}`);
+  for (const o of (summary.offerDesign || []).slice(0, 3)) {
+    if (o?.name) bullets.push(o.name);
+    if (bullets.length >= 3) break;
+  }
+  if (bullets.length < 3) bullets.push("真实场地、真实教练");
+  if (bullets.length < 3) bullets.push("30 分钟轻体验");
+  if (bullets.length < 3) bullets.push("现场答疑，不强制报名");
+  const highlights = bullets.slice(0, 3).map((b) => (b.startsWith("·") ? b : `· ${b}`)).join("\n");
+  const cta = "· 扫码报名 / 私信回复「体验」";
+  return {
+    title: `${posterTitle} · 海报文字（1080×1920 竖版）`,
+    sections: [
+      { heading: "主标题（≤12 字）", body: posterTitle },
+      { heading: "副标题 / Tagline（≤20 字）", body: subtitle },
+      { heading: "活动亮点（1-2 句说清这是什么活动）", body: highlightBody },
+      { heading: "时间 + 地点", body: timeBody },
+      { heading: "3 条卖点（bullet）", body: highlights },
+      { heading: "CTA + 二维码位", body: `${cta}\n（请把二维码放在此区域下方居中）` },
+      { heading: "视觉建议", body: "背景：场地真实照片（教练与孩子互动 / 球场全景），主色用球场绿；字体：主标用粗体黑/白，副标用细体；信息层级：主标 > 亮点 > 时间地点 > 卖点 > CTA > 二维码。" },
+    ],
+  };
+}
+
+function localCampaignInvite(profile, summary) {
+  const venue = firstAvailable(profile?.shortName, profile?.name, "球场");
+  const title = summary.title || `${venue}体验活动`;
+  // 活动亮点：从受众 + 核心动作 提炼「家长视角的一句话」,不用 coreIdea(那是规划语言)
+  const highlights = [
+    `${venue} 真实场地、真实教练`,
+    `30 分钟轻体验，不用先报名`,
+    `现场介绍后续课程，看完再决定`,
+  ];
+  // 开场：直接说"我们这边在做 + 想到您"——像私信给家长,不用"我是运营"这种角色描述
+  return {
+    title: `${title} · 邀请文案`,
+    sections: [
+      { heading: "开场（介绍自己）", body: `Hi，${venue} 这边最近在办「${title}」，想到您，就想邀您带孩子来玩一次。` },
+      { heading: "活动亮点", body: `这次想让孩子真实感受一下：\n${highlights.map((h) => `· ${h}`).join("\n")}\n不强制报名课程，先来玩一次。` },
+      { heading: "行动号召", body: `如果时间合适，回我一句「体验」我发地址和到场时间给您；不方便也没关系～` },
+    ],
+  };
+}
+
+function localCampaignSignup(profile, summary) {
+  const venue = firstAvailable(profile?.shortName, profile?.name, "球场");
+  const title = summary.title || `${venue}体验活动`;
+  return {
+    title: `${title} · 报名接龙`,
+    sections: [
+      { heading: "群公告（开群先发）", body: `【${title} · 报名接龙】先报先得，请按下面格式回复，方便我们私聊确认时间。` },
+      { heading: "报名字段", body: "1. 孩子昵称 + 年龄\n2. 计划到场时间（上午场 / 下午场）\n3. 家长联系方式（电话或微信）" },
+      { heading: "提醒", body: "· 报名后我们私聊发地址和注意事项\n· 名额有限，先到先得" },
+      { heading: "地址占位", body: `（活动前 2 天在群公告补充：${venue} 具体地址 + 交通 + 停车）` },
+      { heading: "报名截止", body: "（活动前 1 天 18:00）" },
+      { heading: "客服", body: `任何问题群里 @运营，或私信 ${venue} 客服。` },
+    ],
+  };
+}
+
+function localCampaignFaq(profile, summary) {
+  const venue = firstAvailable(profile?.shortName, profile?.name, "球场");
+  const title = titleSafe(summary);
+  return {
+    title: `${title} · 答疑 FAQ`,
+    sections: [
+      { heading: "Q1 活动几点开始？", body: "时间以最终群公告为准，会提前 2 天通知，报名后单独私聊提醒。" },
+      { heading: "Q2 适合多大的孩子？", body: "默认 4-12 岁分两组；成人新手请私聊另约时段。" },
+      { heading: "Q3 需要自备球拍吗？", body: "不用，场地提供试用球拍和球。建议穿运动鞋和宽松衣物。" },
+      { heading: "Q4 怎么收费？", body: `首次体验按 ${venue} 实际安排为准；体验当天会介绍后续课程与约球方式，不强制报名。` },
+      { heading: "Q5 下雨天怎么办？", body: "室内场地不受影响；如极端天气会提前 1 天通知改期。" },
+      { heading: "Q6 家长可以陪同吗？", body: "建议全程陪同，场地有家长休息区。" },
+    ],
+  };
+}
+
+function localCampaignNotice(profile, summary) {
+  const venue = firstAvailable(profile?.shortName, profile?.name, "球场");
+  const title = summary.title || `${venue}体验活动`;
+  const flow = summary.eventFlow.slice(0, 6);
+  const flowLines = flow.length
+    ? flow.map((f, i) => `${i + 1}. ${f.phase || ""}：${f.action || ""}${f.time ? `（${f.time}）` : ""}`).join("\n")
+    : "1. 签到 2. 安全须知 3. 体验 4. 答疑 5. 离场";
+  return {
+    title: `${title} · 家长须知`,
+    sections: [
+      { heading: "时间", body: "（活动前 2 天在群公告补充具体日期 + 上午场/下午场时段）" },
+      { heading: "地点", body: `${venue}（详细地址 + 交通 + 停车 活动前 1 天在群公告补充）` },
+      { heading: "到场流程", body: flowLines },
+      { heading: "注意事项", body: "· 穿运动鞋、运动服\n· 不要带贵重物品\n· 现场听从教练安排\n· 拍摄含孩子的素材前会先征求家长同意" },
+      { heading: "联系方式", body: `任何问题群里 @运营，或私信 ${venue} 客服。` },
+    ],
+  };
+}
+
+function titleSafe(summary) {
+  return summary?.title || "活动";
+}
+
+const LOCAL_CAMPAIGN_MATERIAL_BUILDERS = {
+  campaign_poster: localCampaignPoster,
+  campaign_invite: localCampaignInvite,
+  campaign_signup: localCampaignSignup,
+  campaign_faq: localCampaignFaq,
+  campaign_notice: localCampaignNotice,
+};
+
+function buildCampaignMaterialLocal(profile, summary, format) {
+  const builder = LOCAL_CAMPAIGN_MATERIAL_BUILDERS[format];
+  if (!builder) return null;
+  return builder(profile, summary);
+}
+
+function buildCampaignMaterialsFallback(profile, summary, formats) {
+  return formats.map((format) => {
+    const meta = campaignMaterialMeta(format) || { format, label: format };
+    const material = buildCampaignMaterialLocal(profile, summary, format) || { title: meta.label, sections: [] };
+    return { format, label: meta.label, material };
+  });
+}
+
+function campaignMaterialMessages(profile, summary, formats, fallbackMaterials) {
+  // 每种 format 严格指定 sections 数量、heading 文本、body 字数上限。
+  // 后处理会按这套骨架强制改写：所以即使 AI 跑题，最终结果仍会符合骨架。
+  const formatRules = {
+    campaign_poster: {
+      slotCount: 7,
+      titleHint: "<主标> · 海报文字（1080×1920 竖版）",
+      sections: [
+        { heading: "主标题（≤12 字）",                       bodyHint: "≤12 字醒目短语，沿用活动标题最关键的几个字。不要写长句。" },
+        { heading: "副标题 / Tagline（≤20 字）",             bodyHint: "≤20 字一句话定位，例如「先来一次真实体验，再决定下一步」。**不要直接抄 coreIdea**（那是规划摘要）。" },
+        { heading: "活动亮点（1-2 句说清这是什么活动）",    bodyHint: "1-2 句说清「这个活动是什么、为什么值得来」。**家长视角的描述**。不要写「建立关系」「拉新」「第一批到场」这种运营/规划话术。" },
+        { heading: "时间 + 地点",                           bodyHint: "明确就写明确，未确定就写「活动前 2 天群公告通知」。两行 bullet。" },
+        { heading: "3 条卖点（bullet）",                     bodyHint: "用 `· ` 开头的 3 条，每条 ≤ 18 字。**必须从受众(audience) + 类型(typeLabel) + 福利(offerDesign.name) 提炼家长可读的硬信息**。**严禁使用 contentHooks**——那是给小红书/抖音的社交钩子（问句/悬念）。" },
+        { heading: "CTA + 二维码位",                        bodyHint: "「扫码报名 / 私信回复『体验』」+ 一行「（请把二维码放在此区域下方居中）」。" },
+        { heading: "视觉建议",                              bodyHint: "1-2 句：背景/主色/字体建议。" },
+      ],
+    },
+    campaign_invite: {
+      slotCount: 3,
+      sections: [
+        { heading: "开场（介绍自己）", bodyHint: "≤60 字，**像私信给一个家长**。直接说「我们这边在做 + 想到您」,不要说「我是运营」「建立关系」「第一批到场」这种内部/规划话术。" },
+        { heading: "活动亮点",         bodyHint: "≤80 字，**3 条 bullet**。家长视角的具体价值（场地/时长/动作/福利），不是抽象描述。" },
+        { heading: "行动号召",         bodyHint: "≤40 字，**像跟朋友说话**。比如「回我一句『体验』我发地址给您；不方便也没关系～」。不要说「我把时间地点发您」「有名额」这种内部/销售口吻。" },
+      ],
+    },
+    campaign_signup: {
+      slotCount: 5,
+      sections: [
+        { heading: "群公告（开群先发）", bodyHint: "群公告开头话术，说明活动 + 接龙。" },
+        { heading: "报名字段",           bodyHint: "编号 1./2./3. 列出报名字段（姓名、孩子年龄、到场时间、联系方式）。" },
+        { heading: "地址占位",           bodyHint: "地址行占位；未确定写「活动前 2 天群公告通知」。" },
+        { heading: "报名截止",           bodyHint: "报名截止时间占位。" },
+        { heading: "客服",               bodyHint: "客服联系方式。" },
+      ],
+    },
+    campaign_faq: {
+      slotCount: 6,
+      sections: [
+        { heading: "Q1 时间",      bodyHint: "≤60 字 A。" },
+        { heading: "Q2 年龄",      bodyHint: "≤60 字 A。" },
+        { heading: "Q3 装备/着装", bodyHint: "≤60 字 A。" },
+        { heading: "Q4 收费/福利", bodyHint: "≤60 字 A；不写具体价格。" },
+        { heading: "Q5 天气/改期", bodyHint: "≤60 字 A。" },
+        { heading: "Q6 家长陪同",  bodyHint: "≤60 字 A。" },
+      ],
+    },
+    campaign_notice: {
+      slotCount: 4,
+      sections: [
+        { heading: "时间",     bodyHint: "≤60 字；未确定写「活动前 2 天群公告通知」。" },
+        { heading: "地点",     bodyHint: "≤60 字。" },
+        { heading: "到场流程", bodyHint: "编号 1./2./3. 流程；信息不全时写「活动前 2 天群公告补充」。" },
+        { heading: "注意事项", bodyHint: "用 `· ` 开头，3-5 条。" },
+      ],
+    },
+  };
+
+  const systemLines = [
+    "你是网球场活动物料撰写助手。基于已有活动方案，针对家长 / 意向家长 / 社群成员生成可立即发布的对外物料文案。",
+    "硬性约束：",
+    "1) 每种物料的 sections 数量严格 = 指定的 slotCount；多写少写都会被后处理裁掉。",
+    "2) 每段的 heading 文本必须按下面指定的写，不要改写、不要加副标题、不要合并段。",
+    "3) 每段 body 用 \\n 表示换行，遵守字数上限。",
+    "4) 不要编造价格、开放时间、师资案例、学员反馈、训练或升学效果。",
+    "5) 海报要像海报：主标 + 副标 + 3 条 bullet 卖点 + CTA + 视觉建议。",
+    "6) 短信正文必须 ≤70 字符（不含签名），后处理会硬截断。",
+    "",
+    "物料骨架（每种 format 一份）：",
+  ];
+
+  formats.forEach((f) => {
+    const r = formatRules[f];
+    if (!r) return;
+    systemLines.push(`\n# ${f}  (slotCount=${r.slotCount})`);
+    r.sections.forEach((s, i) => {
+      systemLines.push(`  [${i + 1}] heading: "${s.heading}" — ${s.bodyHint}`);
+    });
+    if (r.titleHint) systemLines.push(`  title: 形如「${r.titleHint}」`);
+  });
+
+  systemLines.push("\n输出严格 JSON：{ items: [{ format, label, material: { title, sections: [{heading, body}] } }] }。不要 Markdown，不要解释。");
+
+  return [
+    { role: "system", content: systemLines.join("\n") },
+    {
+      role: "user",
+      content: JSON.stringify({
+        taskType: "campaign_materials",
+        venueProfile: profileForPrompt(profile),
+        campaign: summary,
+        formats: formats.map((f) => {
+          const meta = campaignMaterialMeta(f);
+          const r = formatRules[f];
+          return {
+            format: f,
+            label: meta?.label || f,
+            description: meta?.description || "",
+            slotCount: r?.slotCount,
+            sections: r?.sections,
+          };
+        }),
+        skeletonReference: fallbackMaterials,
+        outputNote: "只返回 JSON。",
+      }),
+    },
+  ];
+}
+
+function normalizeCampaignMaterialItem(raw, fallback) {
+  const format = raw?.format || fallback?.format || "";
+  const meta = campaignMaterialMeta(format);
+  const label = raw?.label || meta?.label || fallback?.label || format;
+  const rawMaterial = raw?.material && typeof raw.material === "object" ? raw.material : (fallback?.material || { title: label, sections: [] });
+  // 强制结构：永远按 canonical 骨架输出（保证标题、段数、字数受控）
+  const enforced = enforceCampaignMaterialStructure(format, rawMaterial, fallback?.material || null);
+  return {
+    format,
+    label,
+    material: {
+      title: enforced.title || label,
+      sections: enforced.sections.filter((s) => s.heading || s.body),
+    },
+  };
+}
+
+async function buildCampaignMaterialDraftsWithAi(profile, summary, formats) {
+  const fallbackMaterials = buildCampaignMaterialsFallback(profile, summary, formats);
+  const settings = await loadAiSettings();
+  const resolved = resolveAiProvider(settings);
+  if (!resolved) {
+    return {
+      materials: fallbackMaterials,
+      aiMeta: { source: "fallback", provider: "local", model: "", error: "未配置 AI，提供本地模板" },
+    };
+  }
+  const { provider, config } = resolved;
+  const providerLabel = providerDefaults[provider]?.label || provider;
+  try {
+    const text = await callAiText(provider, config, campaignMaterialMessages(profile, summary, formats, fallbackMaterials));
+    const data = extractJson(text);
+    const list = Array.isArray(data?.items) ? data.items : [];
+    const byFormat = new Map(list.map((it) => [it.format, it]));
+    const materials = formats.map((format) => {
+      const fallback = fallbackMaterials.find((m) => m.format === format);
+      return normalizeCampaignMaterialItem(byFormat.get(format) || {}, fallback);
+    });
+    return { materials, aiMeta: { source: "ai", provider: providerLabel, model: config.model } };
+  } catch (error) {
+    return {
+      materials: fallbackMaterials,
+      aiMeta: { source: "fallback", provider: providerLabel, model: config?.model || "", error: error.message || "活动物料生成失败，已回退本地模板" },
+    };
+  }
+}
+
+function buildCampaignMaterialsRequest() {
+  return {
+    validate: (body = {}) => {
+      const campaignId = String(body.campaignId || "").trim();
+      const campaignTitle = String(body.campaignTitle || "").trim();
+      const rawFormats = Array.isArray(body.formats) ? body.formats : [];
+      const formats = [...new Set(rawFormats.filter((f) => CAMPAIGN_MATERIAL_FORMAT_SET.has(f)))];
+      if (!campaignId) return { error: "缺少 campaignId" };
+      if (!formats.length) return { error: "未选择任何物料类型" };
+      return { campaignId, campaignTitle, formats };
+    },
   };
 }
 
@@ -2093,7 +3228,10 @@ function juniorInsightMessages(profile, task, framework, mode, brief, allowedAud
             ? `本阶段可做的「真实展示」素材：${showcaseLabels.join("、")}。shootableAssets 要贴合这些真实可拍的素材；开业前不要列还不存在的学员/课堂画面。`
             : "本阶段尚无学员，shootableAssets 只列 场地/器材/教练 等真实可拍素材，不要写学员或课堂画面。",
           "mustAvoid 只聚合「合规边界」：把 generationBrief.mustAvoid、profile.avoid、contentRules.forbiddenFraming 汇总进来，不要自己发明人群禁忌。",
-        ],
+          brief?.contentType === "explainer"
+            ? "本次内容方向已锁定为「观点讲解」：topQuestions/weeklyFocus 聚焦家长的认知与价值决策问题，不要把重点放在拍摄真实展示画面上。"
+            : (brief?.contentType ? `本次内容方向已锁定为真实展示类「${brief.contentType}」：shootableAssets 与 weeklyFocus 都围绕这一类真实画面展开。` : null),
+        ].filter(Boolean),
         outputNote: "只返回 JSON。",
       }),
     },
@@ -2133,8 +3271,11 @@ function buildInsightFallback(profile, task, framework, mode, brief, allowedAudi
   };
 }
 
-function angleMessages(profile, task, insight, framework, mode, brief, excludeTitles, stagePolicy = DEFAULT_STAGE_POLICY) {
+function angleMessages(profile, task, insight, framework, mode, brief, excludeTitles, stagePolicy = DEFAULT_STAGE_POLICY, lockContentType = "", want = 0) {
   const coverage = framework.modeCoverage?.[mode] || {};
+  const lockLabel = lockContentType ? lockContentTypeLabel(lockContentType, stagePolicy) : "";
+  // slot 路径方向已窄，少出 angles 留筛选余量。
+  const angleCountText = want > 0 ? `${want + 2}-${want + 3} 条` : "6-10 条";
   const chainBrief = (framework.chains || []).map((chain) => ({
     id: chain.id,
     label: chain.label,
@@ -2191,9 +3332,13 @@ function angleMessages(profile, task, insight, framework, mode, brief, excludeTi
           }],
         },
         constraints: [
-          "输出 6-10 条 angles。",
-          coverageConstraintText(mode, coverage),
-          showcaseConstraintText(mode, stagePolicy),
+          `输出 ${angleCountText} angles。`,
+          lockContentType === "explainer"
+            ? `【硬锁】本批所有 angles 必须 contentType=explainer（观点讲解，来自 chains），禁止出现任何真实展示类。请在 explainer 内部覆盖认知/价值/信任/行动等不同 contentGoal，做出 ${angleCountText} 角度差异，不要重复同一切面。`
+            : lockContentType
+              ? `【硬锁】本批所有 angles 必须 contentType=${lockContentType}（${lockLabel}），全部为该真实展示类，禁止出现 explainer 或其它真实展示类。请在该类的不同 dimensions/场景里做出 ${angleCountText} 角度差异。`
+              : coverageConstraintText(mode, coverage),
+          lockContentType ? null : showcaseConstraintText(mode, stagePolicy),
           "platforms 只用 xhs、douyin、video、moments、group、dm；formats 只用 video、xhs_image、moments_text、moments_image、community。",
           "每条必须先有 parentQuestion 再有 structure，且不得与 excludeTitles 近义重复。",
           brief?.mustCover?.length ? `campaign_focus angles 必须覆盖：${brief.mustCover.join("、")}。` : "无活动 brief 时不要硬造 campaign_focus。",
@@ -2226,7 +3371,7 @@ function coverageConstraintText(mode, coverage) {
   return `focused 模式：campaign_focus 占比 ${(coverage.campaignShareMin || 0.5) * 100}%-${(coverage.campaignShareMax || 0.7) * 100}%，其余链各 0-1 条，但必须保留 ${(coverage.required || ["trust_pro", "next_step"]).join("、")} 各 1 条。`;
 }
 
-function buildAnglesFallback(profile, task, insight, framework, mode, allowedAudienceIds, stagePolicy = DEFAULT_STAGE_POLICY) {
+function buildAnglesFallback(profile, task, insight, framework, mode, allowedAudienceIds, stagePolicy = DEFAULT_STAGE_POLICY, lockContentType = "") {
   const chains = framework.chains || [];
   const evergreen = chains.filter((chain) => chain.id !== "campaign_focus");
   const campaign = chains.find((chain) => chain.id === "campaign_focus");
@@ -2274,6 +3419,32 @@ function buildAnglesFallback(profile, task, insight, framework, mode, allowedAud
     };
   });
 
+  // 硬锁=explainer：只回观点角度，不混真实展示。
+  if (lockContentType === "explainer") return explainerAngles;
+  // 硬锁=某真实展示类：整批只产该类，按其 dimensions 展开多条角度。
+  if (lockContentType && SHOWCASE_CATEGORY_IDS.has(lockContentType)) {
+    const ct = (stagePolicy?.availableShowcase || []).find((c) => c.id === lockContentType);
+    if (ct) {
+      const dims = (ct.dimensions && ct.dimensions.length) ? ct.dimensions : [`真实的${ct.label}`];
+      return dims.slice(0, 6).map((dim, index) => {
+        const platforms = index % 2 === 0 ? platformByGoal.douyin : platformByGoal.xhs;
+        return {
+          chainId: ct.id,
+          contentType: ct.id,
+          contentGoal: (ct.primaryGoals && ct.primaryGoals[0]) || "信任",
+          parentQuestion: `家长想看看真实的${ct.label}：${dim}`,
+          hookPattern: `用真实画面展示「${dim}」`,
+          structure: ct.structureTemplate || ["开场镜头", "真实片段/细节", "不夸大的边界", "体验/咨询入口"],
+          proofType: "真实拍摄，不摆拍",
+          platforms,
+          formats: platforms.includes("xhs") ? ["xhs_image"] : ["video"],
+          risk: ct.compliance || "真实记录，不承诺效果",
+          title: dim,
+        };
+      });
+    }
+  }
+
   // Only the daily/balanced path mixes in 真实展示; the campaign path stays focused.
   const availableShowcase = mode === "balanced" ? (stagePolicy?.availableShowcase || []) : [];
   if (!availableShowcase.length) return explainerAngles;
@@ -2311,8 +3482,10 @@ function buildAnglesFallback(profile, task, insight, framework, mode, allowedAud
   return mixed;
 }
 
-function topicDirectionMessages(profile, task, insight, angles, framework, mode, stagePolicy = DEFAULT_STAGE_POLICY) {
+function topicDirectionMessages(profile, task, insight, angles, framework, mode, stagePolicy = DEFAULT_STAGE_POLICY, lockContentType = "", want = 0) {
   const showcaseLabels = showcaseLabelsFor(stagePolicy);
+  const lockLabel = lockContentType ? lockContentTypeLabel(lockContentType, stagePolicy) : "";
+  const dirCountText = want > 0 ? `${want}（精选，不要凑数）` : "4-8";
   return [
     {
       role: "system",
@@ -2355,23 +3528,26 @@ function topicDirectionMessages(profile, task, insight, angles, framework, mode,
           }],
         },
         constraints: [
-          "directions 数量 4-8，每条对应 angles 里的一条（chainId 与 contentType 一致）。",
+          lockContentType ? `【硬锁】本批所有 directions 的 contentType 必须 = ${lockContentType}（${lockLabel}），禁止出现任何其它 contentType。` : null,
+          `directions 数量 ${dirCountText}，每条对应 angles 里的一条（chainId 与 contentType 一致）。`,
           "真实展示类的 structure 用拍摄式（开场镜头 → 真实片段/细节 → 不夸大的边界 → 体验入口），materials 写真实可拍画面；不要写成口播讲解。",
           "audiences 只用 parents、teens；禁止 adults/players/corporate。",
           "platforms 只用 xhs、douyin、video、moments、group、dm；formats 只用 video、xhs_image、moments_text、moments_image、community。",
           "goal 优先 junior；活动类可用 event；信任类可用 trust。",
           "structure 要具体可用于后续脚本（如「家长疑问 → 训练里练到什么 → 边界 → 体验入口」）。",
           "禁止照抄 angles 的 dimension 原文当标题，要本地化成更口语的家长标题。",
-        ],
+        ].filter(Boolean),
         outputNote: "只返回 JSON。",
       }),
     },
   ];
 }
 
-function directionCriticMessages(profile, framework, directions, stagePolicy = DEFAULT_STAGE_POLICY) {
+function directionCriticMessages(profile, framework, directions, stagePolicy = DEFAULT_STAGE_POLICY, lockContentType = "", want = 0) {
   const showcaseLabels = showcaseLabelsFor(stagePolicy);
   const allowedTypes = (stagePolicy?.allowedContentTypes || ["explainer"]);
+  const lockLabel = lockContentType ? lockContentTypeLabel(lockContentType, stagePolicy) : "";
+  const keepText = want > 0 ? `${want}` : "4";
   return [
     {
       role: "system",
@@ -2391,22 +3567,26 @@ function directionCriticMessages(profile, framework, directions, stagePolicy = D
         availableShowcase: showcaseLabels,
         targetShowcaseShare: stagePolicy?.showcaseShare || 0,
         directions,
+        lockContentType: lockContentType || undefined,
         checklist: [
           "是否家长决策视角（不是球友/白领/成人自练）",
-          "整批是否覆盖 ≥3 种 contentGoal",
-          "contentType 是否都在 allowedContentTypes 内（出现未解锁的真实课堂/学员成长要删或改）",
-          "真实展示占比是否大致达到 targetShowcaseShare（不足可把个别 explainer 改写为可用的真实展示类）",
+          lockContentType
+            ? `【硬锁】每条 contentType 是否都 = ${lockContentType}（${lockLabel}）；不是的要改成该类型或删除，绝不要改成其它类型`
+            : "整批是否覆盖 ≥3 种 contentGoal",
+          lockContentType ? null : "contentType 是否都在 allowedContentTypes 内（出现未解锁的真实课堂/学员成长要删或改）",
+          lockContentType ? null : "真实展示占比是否大致达到 targetShowcaseShare（不足可把个别 explainer 改写为可用的真实展示类）",
           "真实展示类是否写成拍摄式而非讲解稿；学员成长是否真实、不承诺效果、注明需家长授权",
           "materials 是否都能在少儿网球场真实拍到",
           "是否触犯 contentRules.forbiddenFraming 或 profile.avoid（承诺效果/升学/夸张）",
           "标题/角度是否与同批其它条目重复",
-        ],
+        ].filter(Boolean),
         requiredShape: { directions: ["与输入同结构（含 contentType），仅保留合格项，可改写 title/purpose"] },
         constraints: [
-          "至少保留 4 条；若多条雷同只留最好的一条。",
+          `至少保留 ${keepText} 条；若多条雷同只留最好的一条。`,
           "对触碰禁用表述的条目，改写为合规措辞而不是直接删光。",
           "保留每条的 contentType 字段。",
-        ],
+          lockContentType ? `本批为硬锁类型，所有保留/改写后的 direction 的 contentType 必须 = ${lockContentType}，禁止改成其它类型。` : null,
+        ].filter(Boolean),
         outputNote: "只返回 JSON：{ directions: [...] }。",
       }),
     },
@@ -2432,8 +3612,9 @@ function decorateDirectionList(rawDirections, profile, normalizedTask) {
   });
 }
 
-function directionsFromAngles(profile, normalizedTask, insight, angles) {
-  const raw = angles.slice(0, 6).map((angle, index) => ({
+function directionsFromAngles(profile, normalizedTask, insight, angles, want = 0) {
+  const take = Number(want) > 0 ? Math.max(1, Math.floor(Number(want))) : 6;
+  const raw = angles.slice(0, take).map((angle, index) => ({
     id: makeTopicId("ai", angle.title || angle.parentQuestion),
     chainId: angle.chainId,
     contentType: angle.contentType || "explainer",
@@ -2459,6 +3640,11 @@ async function buildTopicDirectionsWithAi(profile, task = {}) {
   const brief = normalizeBrief(task.generationBrief);
   const mode = resolveGenerationMode(task, brief);
   const stagePolicy = resolveStagePolicy(profile, framework);
+  // 硬锁内容类型：slot 已定方向(科普/某真实展示类)时，整批只产该类型。
+  // 真实展示类若本阶段不可用(如开业前无学员)，则放弃锁定退回正常混排。
+  const lockContentType = resolveLockContentType(brief?.contentType, stagePolicy);
+  // 期望条数：从一周计划某格生成时方向已窄，要少而精（want=3）；直接生成入口不传，保持原数量。
+  const want = Number(task.maxDirections) > 0 ? Math.max(1, Math.floor(Number(task.maxDirections))) : 0;
   const allowedAudienceIds = allowedAudiencesForProfile(profile);
   const goal = inferPrimaryGoal(task);
   const operatingMode = inferOperatingMode(profile, { ...task, goal });
@@ -2471,7 +3657,7 @@ async function buildTopicDirectionsWithAi(profile, task = {}) {
   let aiMeta = buildLocalAiMeta(settings);
 
   let insight = buildInsightFallback(profile, task, framework, mode, brief, allowedAudienceIds, stagePolicy);
-  let angles = buildAnglesFallback(profile, task, insight, framework, mode, allowedAudienceIds, stagePolicy);
+  let angles = buildAnglesFallback(profile, task, insight, framework, mode, allowedAudienceIds, stagePolicy, lockContentType);
   let directions = [];
 
   if (resolved) {
@@ -2486,14 +3672,14 @@ async function buildTopicDirectionsWithAi(profile, task = {}) {
         steps.push("insight");
       }
 
-      const angleText = await callAiText(provider, config, angleMessages(profile, task, insight, framework, mode, brief, task.excludeTitles, stagePolicy));
+      const angleText = await callAiText(provider, config, angleMessages(profile, task, insight, framework, mode, brief, task.excludeTitles, stagePolicy, lockContentType, want));
       const angleData = extractJson(angleText);
       if (angleData && Array.isArray(angleData.angles) && angleData.angles.length) {
         angles = angleData.angles;
         steps.push("angles");
       }
 
-      const topicText = await callAiText(provider, config, topicDirectionMessages(profile, task, insight, angles, framework, mode, stagePolicy));
+      const topicText = await callAiText(provider, config, topicDirectionMessages(profile, task, insight, angles, framework, mode, stagePolicy, lockContentType, want));
       const topicData = extractJson(topicText);
       if (!topicData || !Array.isArray(topicData.directions) || !topicData.directions.length) {
         throw new Error("AI 返回选题结构不完整");
@@ -2502,9 +3688,10 @@ async function buildTopicDirectionsWithAi(profile, task = {}) {
       steps.push("topics");
 
       try {
-        const criticText = await callAiText(provider, config, directionCriticMessages(profile, framework, rawDirections, stagePolicy));
+        const criticText = await callAiText(provider, config, directionCriticMessages(profile, framework, rawDirections, stagePolicy, lockContentType, want));
         const criticData = extractJson(criticText);
-        if (criticData && Array.isArray(criticData.directions) && criticData.directions.length >= 4) {
+        const criticMin = want ? Math.max(2, want - 1) : 4;
+        if (criticData && Array.isArray(criticData.directions) && criticData.directions.length >= criticMin) {
           rawDirections = criticData.directions;
           steps.push("critic");
         }
@@ -2528,8 +3715,22 @@ async function buildTopicDirectionsWithAi(profile, task = {}) {
   }
 
   if (!directions.length) {
-    directions = directionsFromAngles(profile, normalizedTask, insight, angles);
+    directions = directionsFromAngles(profile, normalizedTask, insight, angles, want);
   }
+
+  // 硬锁兜底：无论 AI/critic 是否守规，最终只放该类型；若全被过滤掉则用本地锁定角度重建。
+  if (lockContentType) {
+    let onType = directions.filter((d) => String(d.contentType || "") === lockContentType);
+    if (!onType.length) {
+      const lockedAngles = buildAnglesFallback(profile, task, insight, framework, mode, allowedAudienceIds, stagePolicy, lockContentType);
+      onType = directionsFromAngles(profile, normalizedTask, insight, lockedAngles, want)
+        .filter((d) => String(d.contentType || "") === lockContentType);
+    }
+    if (onType.length) directions = onType;
+  }
+
+  // 最终兜底：按需裁到目标条数（slot 路径少而精）。
+  if (want && directions.length > want) directions = directions.slice(0, want);
 
   const summary = {
     mode: operatingModeLabels[operatingMode] || operatingMode,
@@ -2723,11 +3924,17 @@ async function buildReferenceDirectionsWithAi(profile, task = {}, reference = {}
 }
 
 function resolveCadence(task = {}) {
-  return {
-    video: Number.isFinite(Number(task.cadence?.video)) ? Number(task.cadence.video) : cadenceDefaults.video,
-    xhsImage: Number.isFinite(Number(task.cadence?.xhsImage)) ? Number(task.cadence.xhsImage) : cadenceDefaults.xhsImage,
-    moments: Number.isFinite(Number(task.cadence?.moments)) ? Number(task.cadence.moments) : cadenceDefaults.moments,
-  };
+  const c = task.cadence || {};
+  let content;
+  if (Number.isFinite(Number(c.content))) {
+    content = Number(c.content);
+  } else if (Number.isFinite(Number(c.video)) || Number.isFinite(Number(c.xhsImage))) {
+    // 兼容旧数据：公域总数 = 旧的视频 + 图文配额（朋友圈忽略）。
+    content = (Number(c.video) || 0) + (Number(c.xhsImage) || 0);
+  } else {
+    content = cadenceDefaults.content;
+  }
+  return { content: Math.max(1, Math.floor(content) || cadenceDefaults.content) };
 }
 
 function buildContextPack(profile, task = {}) {
@@ -2821,20 +4028,39 @@ function buildOperationPlan(profile, task = {}) {
   const seedPillars = buildPillars(profile, { ...task, goal, mode, focus, eventInfo });
   const cadence = resolveCadence(task);
   const normalizedTask = { ...task, goal, mode, pillars: seedPillars.map((pillar) => pillar.id) };
-  const ranked = topicBank
-    .map((topic) => ({ topic, score: scoreTopic(topic, normalizedTask) }))
-    .sort((a, b) => b.score - a.score || a.topic.title.localeCompare(b.topic.title, "zh-CN"));
-  const usedIds = new Set();
-  const makeItem = (slot) => {
-    const topic = pickTopicForSlot(slot, ranked, usedIds);
-    usedIds.add(topic.id);
-    return buildScheduleItem(slot, enrichTopic(topic, profile, normalizedTask), profile, normalizedTask);
+  // 本地兜底也只产出「方向槽位」，不写死具体选题（具体选题走选题路径按需生成）。
+  let pillarCursor = 0;
+  const nextPillar = () => {
+    const pillar = seedPillars[pillarCursor % seedPillars.length] || {};
+    pillarCursor += 1;
+    return pillar;
   };
-  const selected = [
-    ...publishingSlots.xhsImage.slice(0, Math.max(0, cadence.xhsImage)).map(makeItem),
-    ...publishingSlots.video.slice(0, Math.max(0, cadence.video)).map(makeItem),
-    ...publishingSlots.moments.slice(0, Math.max(0, cadence.moments)).map(makeItem),
-  ].sort((a, b) => ["周一", "周二", "周三", "周四", "周五", "周六", "周日"].indexOf(a.day) - ["周一", "周二", "周三", "周四", "周五", "周六", "周日"].indexOf(b.day));
+  // 内容优先：取 N 个公域日槽，形态/平台由每格题材(contentType)亲和派生。
+  const publicDays = ["周一", "周二", "周四", "周六", "周日", "周三", "周五"];
+  const makeSlot = (day) => {
+    const pillar = nextPillar();
+    const direction = String(pillar.focus || pillar.role || pillar.label || "本周内容方向").trim();
+    const contentType = pillar.contentType || "explainer";
+    const derived = platformForFormat(formatForContentType(contentType));
+    const raw = {
+      day,
+      platform: derived.platform,
+      format: derived.format,
+      theme: pillar.label || "本周内容方向",
+      goal,
+      contentType,
+      directionHint: direction,
+      pillar: pillar.id,
+      pillarLabel: pillar.label,
+      whyPlatform: `${contentType === "explainer" || contentType === "faculty_course" ? "认知/资质类题材适合图文沉淀" : "动态过程类题材适合短视频呈现"}，在${derived.platform}发布`,
+      whyTiming: `安排在${day}发布`,
+    };
+    return normalizeScheduleItem(raw, profile, normalizedTask);
+  };
+  const selected = publicDays
+    .slice(0, Math.max(1, cadence.content))
+    .map(makeSlot)
+    .sort((a, b) => ["周一", "周二", "周三", "周四", "周五", "周六", "周日"].indexOf(a.day) - ["周一", "周二", "周三", "周四", "周五", "周六", "周日"].indexOf(b.day));
   const pillars = finalizePillarsFromSchedule(seedPillars, selected);
 
   return {
@@ -2846,15 +4072,14 @@ function buildOperationPlan(profile, task = {}) {
       audience: mainAudience,
       focus,
       eventInfo,
-      rhythm: `本周按 ${cadence.video} 条短视频、${cadence.xhsImage} 篇小红书图文、${cadence.moments} 条朋友圈排布。`,
-      strategySummary: "本地兜底排期：按平台槽位匹配题库，并尽量避免重复选题。",
+      rhythm: `本周公域 ${cadence.content} 条（图文/视频按题材自动分配）。`,
+      strategySummary: "本地兜底排期：按本周支柱铺方向，形态跟着题材走（图文/视频），不分平台配额。",
     },
     cadence,
     pillars,
     platformRhythm: [
-      { platform: "小红书", role: "搜索沉淀和本地种草", cadence: `每周 ${cadence.xhsImage} 篇图文`, content: "按阶段选择认知、新手、家长问题等角度" },
-      { platform: "抖音/视频号", role: "同城曝光和熟人传播", cadence: `每周 ${cadence.video} 条短视频`, content: "按阶段选择场地、演示、体验流程等角度" },
-      { platform: "朋友圈", role: "真实进展与私域信任", cadence: `每周 ${cadence.moments} 条`, content: "按阶段决定私域轻重，不强行刷频" },
+      { platform: "小红书", role: "搜索沉淀和本地种草", cadence: "认知/资质类题材", content: "为什么学网球、师资课程等图文" },
+      { platform: "抖音/视频号", role: "同城曝光和熟人传播", cadence: "动态过程类题材", content: "课堂、学员成长、场地环境、幕后等短视频" },
     ],
     publishingSchedule: selected,
     week: selected,
@@ -2870,8 +4095,25 @@ function buildOperationPlan(profile, task = {}) {
   };
 }
 
-function strategistMessages(profile, task) {
+// 把 stagePolicy 摘成可读的「本阶段内容配比」给 strategist/planner 用，
+// 让一周计划的题材结构与选题库流水线保持一致（如开业前=科普为主+少量真实展示）。
+function stageMixGuidance(stagePolicy = DEFAULT_STAGE_POLICY) {
+  const showcasePct = Math.round((stagePolicy.showcaseShare || 0) * 100);
+  const explainerPct = 100 - showcasePct;
+  const availableShowcase = (stagePolicy.availableShowcase || []).map((ct) => `${ct.label}(${ct.id})`);
+  return {
+    stage: stagePolicy.label || "",
+    explainerPct,
+    showcasePct,
+    allowedContentTypes: stagePolicy.allowedContentTypes || ["explainer"],
+    availableShowcase,
+    note: stagePolicy.note || "",
+  };
+}
+
+function strategistMessages(profile, task, stagePolicy = DEFAULT_STAGE_POLICY) {
   const context = buildContextPack(profile, task);
+  const stageMix = stageMixGuidance(stagePolicy);
   return [
     {
       role: "system",
@@ -2879,6 +4121,8 @@ function strategistMessages(profile, task) {
         "你是网球场内容运营策略顾问（Strategist 角色）。",
         "你的任务是根据球场档案和运营输入，推导本周平台策略与内容方向，而不是套用固定周历模板。",
         "必须结合 stage、goal、audience 推理公域/私域权重，并解释理由。",
+        "内容支柱必须同时覆盖『认知科普类』(为什么学网球、网球对孩子专注力/坚持/成长的价值、网球与升学名校等正向认知) 和『真实展示/沟通类』(场地、师资、预约开放、运营幕后)。",
+        "即使在开业前，也不要把整周支柱都做成场地/预约/体验等沟通类——认知科普类是建立『为什么选网球、为什么选我们』认知的关键，必须保留。",
         "不得编造价格、开放时间、学员案例、爆满现场或效果承诺。",
         "输出必须是严格 JSON，不要 Markdown，不要解释。",
         "topicPatterns 只是常见角度参考，不是必须选用的题库。",
@@ -2889,6 +4133,7 @@ function strategistMessages(profile, task) {
       content: JSON.stringify({
         taskType: "weekly_content_strategy",
         ...context,
+        stageContentMix: stageMix,
         requiredShape: {
           strategySummary: "string",
           platformMix: [{
@@ -2915,6 +4160,8 @@ function strategistMessages(profile, task) {
           "根据 stage 推理平台权重，例如开业前通常公域种草权重更高，但需写出理由，不要套用固定结论。",
           "私域（朋友圈/社群）是否进入本周主计划由你判断；社群默认不在 publishingSchedule 里出现。",
           "contentPillars 必须结合 weeklyInput.focus、eventInfo 与 venueProfile 定制，建议 4-6 个。",
+          "contentPillars 必须至少包含 2 个『认知科普类』支柱（如：为什么学网球、网球对孩子成长/专注力的价值、网球与升学名校等正向认知），不要让支柱全是场地/预约/体验等沟通类。",
+          `本阶段题材大致配比：约 ${stageMix.explainerPct}% 科普讲解(explainer) + 约 ${stageMix.showcasePct}% 真实展示；真实展示本阶段只能用：${stageMix.availableShowcase.join("、") || "暂无"}，不要提还不存在的真实课堂/学员成长。`,
           "禁止原样照搬 pillarReference 的 exampleLabel 和 exampleAngle；label 与 focus 都要体现本周差异。",
           "focus 至少 15 字，写清本周该支柱解决什么问题、适合什么人群、与 stage/goal 的关系。",
           "schedulingPrinciples 要写清「什么题适合什么平台、什么阶段不适合什么平台」。",
@@ -2924,24 +4171,21 @@ function strategistMessages(profile, task) {
   ];
 }
 
-function plannerMessages(profile, task, strategy, candidateTopics = []) {
+function plannerMessages(profile, task, strategy, stagePolicy = DEFAULT_STAGE_POLICY) {
   const context = buildContextPack(profile, task);
-  const candidates = candidateTopics.slice(0, 30).map((topic) => ({
-    topicId: topic.id,
-    title: topic.title,
-    goal: topic.goal,
-    contentType: topic.contentType || "",
-    platforms: topic.platforms,
-    parentQuestion: topic.parentQuestion || "",
-  }));
+  const stageMix = stageMixGuidance(stagePolicy);
+  const showcaseEnum = stageMix.allowedContentTypes.filter((id) => id !== "explainer");
+  const contentTypeEnum = ["explainer", ...showcaseEnum].join("|");
   return [
     {
       role: "system",
       content: [
-        "你是网球场内容运营排期策划（Planner 角色），本轮只负责「排期」，不负责创作选题。",
-        "选题已经由专门的选题流水线生成好，放在 candidateTopics 里。你必须从 candidateTopics 里挑选，逐条排进本周 publishingSchedule。",
-        "严禁新造选题：每条排期的 topicId 和 topicTitle 必须来自 candidateTopics 中的某一条，原样引用，不要改写标题、不要发明新 id。",
-        "你的工作是决定：哪条选题放哪天、发哪个平台、为什么这样排（whyPlatform/whyTiming），以及结合平台的简短 topicAngle 说明。",
+        "你是网球场内容运营排期策划（Planner 角色），本轮只负责「安排」，不负责创作具体选题。",
+        "你的产出是一张「本周内容骨架」：决定每天发哪个平台、什么形式、属于哪个内容支柱、要解决家长的什么方向问题，以及为什么这样排。",
+        "严禁写出具体的选题标题——具体选题会在用户点「生成选题」时由专门的选题流水线生成。你只给方向（directionHint）。",
+        "directionHint 用一句话写清这一格要解决的家长决策问题或内容方向，例如「打消零基础家长对孩子跟不上的顾虑」「真实展示场地与到达路线」，而不是一个可发布的标题。",
+        "每一格要标注 contentType：explainer（科普/观点讲解）或本阶段允许的真实展示类。",
+        "explainer 不等于操作说明：它包含『认知型科普』（为什么学网球、网球对孩子专注力/坚持/成长的价值、网球与升学名校等），不要把 explainer 都做成体验流程/预约这类操作型。",
         "不得编造事实；risk 必须体现 profile.avoid。",
         "输出必须是严格 JSON，不要 Markdown，不要解释。",
       ].join("\n"),
@@ -2952,7 +4196,7 @@ function plannerMessages(profile, task, strategy, candidateTopics = []) {
         taskType: "weekly_publishing_schedule",
         ...context,
         strategy,
-        candidateTopics: candidates,
+        stageContentMix: stageMix,
         requiredShape: {
           overview: {
             title: "string",
@@ -2962,13 +4206,12 @@ function plannerMessages(profile, task, strategy, candidateTopics = []) {
           },
           publishingSchedule: [{
             day: "周一|周二|周三|周四|周五|周六|周日",
-            platform: "小红书|抖音/视频号|朋友圈",
-            format: "图文|短视频|文字/图文|文字",
-            theme: "string",
+            platform: "小红书|抖音/视频号",
+            format: "图文|短视频",
+            theme: "string，这一格的内容方向短语（非可发布标题）",
             goal: "opening|booking|junior|adult_beginner|community|event|trust|daily",
-            topicId: "string，必须等于所选 candidateTopics 项的 topicId",
-            topicTitle: "string，必须等于该 candidateTopics 项的 title",
-            topicAngle: "string，结合平台的角度说明（可基于该选题改写）",
+            contentType: contentTypeEnum,
+            directionHint: "string，一句话写清这一格要解决的家长决策问题或内容方向（非可发布标题）",
             whyPlatform: "string",
             whyTiming: "string",
             pillar: "string，必须来自 strategy.contentPillars 的 id",
@@ -2983,14 +4226,15 @@ function plannerMessages(profile, task, strategy, candidateTopics = []) {
           reminders: ["string"],
         },
         constraints: [
-          `publishingSchedule 总条数必须等于 ${context.cadence.xhsImage + context.cadence.video + context.cadence.moments} 条。`,
-          `其中小红书 ${context.cadence.xhsImage} 条、短视频/视频号 ${context.cadence.video} 条、朋友圈 ${context.cadence.moments} 条。`,
-          "topicId / topicTitle 必须严格取自 candidateTopics，不允许出现 candidateTopics 之外的选题。",
-          "不要安排微信群/社群进 publishingSchedule。",
-          "尽量每条用不同选题；候选不够时同一选题最多复用 2 次，且要在 topicAngle 写清跨平台改写方向。",
-          "platform/format 必须与 platform 匹配，例如小红书用图文，短视频平台用短视频。",
+          `publishingSchedule 共 ${context.cadence.content} 条公域内容；不要排朋友圈/微信群/社群。`,
+          "严禁写具体选题标题；theme 与 directionHint 都只给方向，不要写成一个可直接发布的标题。",
+          "每条 contentType 按 stageContentMix 的题材配比安排（科普讲解 / 真实展示），由档案阶段决定，不要用本阶段未解锁的类型。",
+          "format 由题材决定（不是由你随意指定）：class_record/student_growth/venue_env/behind_scene 这类动态过程题材一律用『短视频』；explainer/faculty_course 这类认知/资质题材用『图文』。platform 跟随 format：图文->小红书，短视频->抖音/视频号。",
+          "尽量让每一格的方向/支柱各不相同，整周覆盖多种家长问题与内容类型。",
           "whyPlatform 和 whyTiming 必填，且要具体，不要空话。",
           "每条排期的 pillar/pillarLabel 必须引用 strategy.contentPillars，不要自造未在策略中出现的支柱。",
+          `本周题材按本阶段配比安排：约 ${stageMix.explainerPct}% 的格子用 explainer(科普讲解)、约 ${stageMix.showcasePct}% 用真实展示；真实展示只能用 ${showcaseEnum.join("、") || "（本阶段无）"}，不要用本阶段未解锁的真实课堂/学员成长。`,
+          "整周必须至少有 2 格是『认知型科普』方向（为什么学网球 / 网球对孩子成长的价值 / 专业认知等），不要把所有格子都排成场地/预约/体验/幕后等沟通类——即使在开业前也要有认知科普。",
         ],
       }),
     },
@@ -3014,122 +4258,54 @@ function isValidStrategy(data) {
   );
 }
 
-function countSchedulePlatforms(schedule = []) {
-  let xhsImage = 0;
-  let video = 0;
-  let moments = 0;
-  for (const item of schedule) {
-    const platform = String(item.platform || "");
-    if (platform.includes("小红书")) xhsImage += 1;
-    else if (platform.includes("朋友圈")) moments += 1;
-    else if (platform.includes("抖音") || platform.includes("视频号")) video += 1;
-  }
-  return { xhsImage, video, moments };
-}
-
-function dedupeCandidateTopics(topics = []) {
-  const byId = new Map();
-  const seenTitles = new Set();
-  for (const topic of topics) {
-    if (!topic || !topic.id) continue;
-    const titleKey = normalizeTitleKey(topic.title);
-    if (byId.has(topic.id) || seenTitles.has(titleKey)) continue;
-    byId.set(topic.id, topic);
-    seenTitles.add(titleKey);
-  }
-  return Array.from(byId.values());
-}
-
-function platformKeyFromLabel(label = "") {
-  const s = String(label);
-  if (s.includes("小红书")) return "xhs";
-  if (s.includes("朋友圈")) return "moments";
-  if (s.includes("抖音") || s.includes("视频号")) return "video";
-  return "other";
-}
-
-// 强制排期里的 topicId/title 来自候选池：能匹配的对齐，乱造的按平台轮转兜底替换。
-function enforceCandidateTopics(plannerOutput, candidatePool = []) {
-  if (!plannerOutput || !Array.isArray(plannerOutput.publishingSchedule) || !candidatePool.length) return;
-  const byId = new Map(candidatePool.map((t) => [t.id, t]));
-  const byTitle = new Map(candidatePool.map((t) => [normalizeTitleKey(t.title), t]));
-  const usage = new Map();
-  const used = (id) => usage.get(id) || 0;
-  const bump = (id) => usage.set(id, used(id) + 1);
-
-  const pickFor = (platformLabel) => {
-    const pk = platformKeyFromLabel(platformLabel);
-    const matches = (t) => {
-      const ps = t.platforms || [];
-      if (pk === "xhs") return ps.includes("xhs");
-      if (pk === "moments") return ps.includes("moments");
-      if (pk === "video") return ps.includes("douyin") || ps.includes("video");
-      return true;
-    };
-    const order = [...candidatePool].sort((a, b) => used(a.id) - used(b.id));
-    return order.find((t) => matches(t) && used(t.id) < 2)
-      || order.find((t) => used(t.id) < 2)
-      || order[0];
-  };
-
-  for (const slot of plannerOutput.publishingSchedule) {
-    let chosen = byId.get(slot.topicId) || byTitle.get(normalizeTitleKey(slot.topicTitle));
-    if (!chosen) chosen = pickFor(slot.platform);
-    if (!chosen) continue;
-    slot.topicId = chosen.id;
-    slot.topicTitle = chosen.title;
-    bump(chosen.id);
-  }
-}
-
 function isValidPlannerPlan(data, cadence) {
   if (!data || !data.overview || !Array.isArray(data.publishingSchedule) || !data.publishingSchedule.length) {
     return false;
   }
-  const counts = countSchedulePlatforms(data.publishingSchedule);
-  return counts.xhsImage === cadence.xhsImage
-    && counts.video === cadence.video
-    && counts.moments === cadence.moments;
+  const schedule = data.publishingSchedule;
+  // 公域内容总条数对得上即可（图文/视频由题材决定，不再分别卡数）。
+  if (schedule.length !== cadence.content) return false;
+  // 一周计划只产公域内容，不应出现朋友圈/社群。
+  return schedule.every((item) => !/朋友圈|社群|微信群/.test(String(item.platform || "")));
 }
 
-function normalizeScheduleItem(raw, profile, task, candidateById = new Map()) {
+function normalizeScheduleItem(raw, profile, task) {
+  // 槽位只承载「方向」，不再写死具体选题。topicFromScheduleSlot 仅用于补默认 goal/audience/素材等。
   const topic = topicFromScheduleSlot(raw, profile, task);
   const pillarId = pillarDefinitions[raw.pillar] ? raw.pillar : topicPillar(topic);
-  // 按 topicId 回查候选/库选题，让槽位带上真实题材（contentType/category）。
-  const candidate = candidateById.get(raw.topicId) || null;
-  const category = resolveTopicCategory(candidate || { goal: raw.goal || topic.goal });
+  const contentType = String(raw.contentType || "").trim();
+  const directionHint = String(raw.directionHint || raw.topicAngle || raw.reason || "").trim();
+  const category = resolveTopicCategory({ contentType, goal: raw.goal || topic.goal });
+  // 形态跟着题材走：已知 contentType 时由亲和派生 format/platform，保证不会再出现题材-形态错配。
+  const derived = contentType ? platformForFormat(formatForContentType(contentType)) : null;
   return {
     day: raw.day,
-    platform: raw.platform,
-    format: raw.format,
-    theme: raw.theme || "本周内容",
+    platform: derived ? derived.platform : raw.platform,
+    format: derived ? derived.format : raw.format,
+    theme: raw.theme || directionHint || "本周内容方向",
     goal: raw.goal || topic.goal,
-    topicId: raw.topicId || topic.id,
-    topicTitle: raw.topicTitle || topic.title,
-    topicAngle: raw.topicAngle || raw.reason || topic.purpose,
+    directionHint: directionHint || raw.theme || "",
     whyPlatform: raw.whyPlatform || `适合在${raw.platform}发布`,
     whyTiming: raw.whyTiming || `安排在${raw.day}`,
     pillar: pillarId,
     pillarLabel: raw.pillarLabel || pillarDefinitions[pillarId]?.label || pillarId,
-    contentType: candidate?.contentType || "",
+    contentType,
     category: category.id,
     categoryLabel: category.label,
-    parentQuestion: candidate?.parentQuestion || "",
     targetAudience: raw.targetAudience || topic.audiences.map((item) => audienceLabels[item] || item).join(" / "),
     materialNeed: Array.isArray(raw.materialNeed) && raw.materialNeed.length ? raw.materialNeed : topic.materials.slice(0, 4),
     action: raw.action || topic.cta,
     risk: raw.risk || topic.risk,
-    reason: raw.reason || raw.topicAngle || topic.purpose,
+    reason: raw.reason || directionHint || topic.purpose,
   };
 }
 
-function assembleAiPlan(profile, task, strategy, plannerOutput, candidatePool = []) {
+function assembleAiPlan(profile, task, strategy, plannerOutput) {
   const goal = inferPrimaryGoal(task);
   const mode = inferOperatingMode(profile, { ...task, goal });
   const cadence = resolveCadence(task);
   const mainAudience = audienceLabels[task.audience] || "附近潜在用户";
-  const candidateById = new Map(candidatePool.map((topic) => [topic.id, topic]));
-  const schedule = plannerOutput.publishingSchedule.map((item) => normalizeScheduleItem(item, profile, task, candidateById))
+  const schedule = plannerOutput.publishingSchedule.map((item) => normalizeScheduleItem(item, profile, task))
     .sort((a, b) => ["周一", "周二", "周三", "周四", "周五", "周六", "周日"].indexOf(a.day) - ["周一", "周二", "周三", "周四", "周五", "周六", "周日"].indexOf(b.day));
   const pillars = finalizePillarsFromSchedule(strategy.contentPillars, schedule);
 
@@ -3142,7 +4318,7 @@ function assembleAiPlan(profile, task, strategy, plannerOutput, candidatePool = 
       audience: mainAudience,
       focus: plannerOutput.overview?.focus || firstAvailable(task.focus, "本周内容传播"),
       eventInfo: firstAvailable(task.eventInfo, "没有特定活动，按日常运营节奏处理"),
-      rhythm: plannerOutput.overview?.rhythm || `本周 ${cadence.video} 条短视频、${cadence.xhsImage} 篇小红书、${cadence.moments} 条朋友圈。`,
+      rhythm: plannerOutput.overview?.rhythm || `本周公域 ${cadence.content} 条（图文/视频按题材分配）。`,
       strategySummary: plannerOutput.overview?.strategySummary || strategy.strategySummary,
     },
     strategy,
@@ -3170,12 +4346,8 @@ function buildPlanGenerationBrief(profile, task = {}, strategy = {}) {
     ? strategy.contentPillars.map((p) => String(p.focus || p.label || "").trim()).filter(Boolean)
     : [];
   const mustCover = [...new Set([eventInfo, ...pillarFocuses].filter(Boolean))].slice(0, 6);
-  const cadence = resolveCadence(task);
-  const preferredPlatforms = [
-    ...(cadence.xhsImage > 0 ? ["xhs"] : []),
-    ...(cadence.video > 0 ? ["douyin", "video"] : []),
-    ...(cadence.moments > 0 ? ["moments"] : []),
-  ];
+  // 内容优先：平台由题材亲和决定，这里给两条公域平台都开放，具体形态在排期阶段按题材派生。
+  const preferredPlatforms = ["xhs", "douyin", "video"];
   return {
     theme,
     primaryGoal: String(task.goal || "").trim(),
@@ -3199,58 +4371,27 @@ async function buildOperationPlanWithAi(profile, task = {}) {
   const providerLabel = providerDefaults[provider]?.label || provider;
 
   try {
-    const strategyText = await callAiText(provider, config, strategistMessages(profile, task));
+    const framework = await loadAngleFramework();
+    const stagePolicy = resolveStagePolicy(profile, framework);
+
+    const strategyText = await callAiText(provider, config, strategistMessages(profile, task, stagePolicy));
     const strategy = extractJson(strategyText);
     if (!isValidStrategy(strategy)) throw new Error("策略输出结构不完整");
 
-    const library = await loadTopicLibrary();
-    const existingEntries = (library.entries || []);
-    const reusableTopics = existingEntries.filter((entry) => entry.status !== "archived");
-    const excludeTitles = existingEntries.map((entry) => entry.title).filter(Boolean);
-
-    // 选题统一走选题库的 4 步高质量流水线，按本周主题生成。
-    // 有真实活动(eventInfo) → hybrid(活动+认知兼顾)；否则 balanced：本周 focus 只作软主题，
-    // 通过 generationBrief 引导题材，但仍产出多元科普/价值/信任/真实展示，不把整周变成「活动选题」。
-    const generationBrief = buildPlanGenerationBrief(profile, task, strategy);
-    const generationMode = task.eventInfo ? "hybrid" : "balanced";
-    let generated = [];
-    const directionSteps = [];
-    try {
-      const dirResult = await buildTopicDirectionsWithAi(profile, {
-        ...task,
-        generationBrief,
-        generationMode,
-        excludeTitles,
-      });
-      generated = Array.isArray(dirResult?.directions) ? dirResult.directions : [];
-      if (Array.isArray(dirResult?.aiMeta?.steps)) directionSteps.push(...dirResult.aiMeta.steps);
-    } catch {
-      // 生成失败不致命：候选池退化为库内可复用选题。
-    }
-
-    // 新生成的选题入库，让计划与库同源、库逐渐长起来。
-    if (generated.length) {
-      const mergedEntries = mergeTopicsIntoLibrary(existingEntries, generated, profile, task);
-      await saveTopicLibrary({ ...library, entries: mergedEntries });
-    }
-
-    // 候选池 = 新生成 + 可复用库选题（新生成优先）。
-    const candidatePool = dedupeCandidateTopics([...generated, ...reusableTopics]);
-
-    const plannerText = await callAiText(provider, config, plannerMessages(profile, task, strategy, candidatePool));
+    // Planner 只排「方向骨架」，不产具体选题；具体选题由用户在每格点「生成选题」时走选题路径生成。
+    const plannerText = await callAiText(provider, config, plannerMessages(profile, task, strategy, stagePolicy));
     const plannerOutput = extractJson(plannerText);
-    enforceCandidateTopics(plannerOutput, candidatePool);
     if (!isValidPlannerPlan(plannerOutput, resolveCadence(task))) {
       throw new Error("排期输出结构不完整或与发布数量不匹配");
     }
 
     return {
-      ...assembleAiPlan(profile, task, strategy, plannerOutput, candidatePool),
+      ...assembleAiPlan(profile, task, strategy, plannerOutput),
       aiMeta: {
         source: "ai",
         provider: providerLabel,
         model: config.model,
-        steps: ["strategist", ...directionSteps.map((s) => `topic:${s}`), "planner"],
+        steps: ["strategist", "planner"],
       },
     };
   } catch (error) {
@@ -3267,38 +4408,130 @@ async function buildOperationPlanWithAi(profile, task = {}) {
   }
 }
 
+function compactCharCount(value) {
+  return String(value || "").replace(/\s+/g, "").length;
+}
+
+function clipText(value, max = 18) {
+  const text = String(value || "").trim();
+  return text.length > max ? text.slice(0, max) : text;
+}
+
+function videoDurationPolicy(contentType) {
+  const type = String(contentType || "").trim();
+  if (SHOWCASE_CATEGORY_IDS.has(type)) {
+    return {
+      kind: "showcase",
+      durationHint: "20-35s",
+      estimatedDurationSeconds: 28,
+      shotRange: [4, 6],
+      narrationCharRange: [70, 150],
+      defaultSteps: ["开场亮相", "真实画面", "关键细节", "适合人群", "轻引导"],
+    };
+  }
+  if (type === "explainer") {
+    return {
+      kind: "explainer",
+      durationHint: "45-60s",
+      estimatedDurationSeconds: 52,
+      shotRange: [6, 8],
+      narrationCharRange: [180, 280],
+      defaultSteps: ["痛点提问", "核心判断", "原因一", "原因二", "真实细节", "误区提醒", "轻引导"],
+    };
+  }
+  return {
+    kind: "balanced",
+    durationHint: "30-45s",
+    estimatedDurationSeconds: 38,
+    shotRange: [5, 7],
+    narrationCharRange: [120, 210],
+    defaultSteps: ["开场问题", "核心观点", "真实细节", "适合人群", "轻引导"],
+  };
+}
+
+function videoShotTime(index, total, estimatedDurationSeconds) {
+  const each = Math.max(4, Math.round(estimatedDurationSeconds / Math.max(total, 1)));
+  const start = index * each;
+  const end = index === total - 1 ? estimatedDurationSeconds : Math.min(estimatedDurationSeconds, start + each);
+  return `${start}-${end}s`;
+}
+
+function normalizeVideoSteps(structure = [], policy) {
+  const source = Array.isArray(structure) && structure.length ? structure.slice() : [];
+  const steps = source.map((item) => String(item || "").trim()).filter(Boolean);
+  for (const step of policy.defaultSteps) {
+    if (steps.length >= policy.shotRange[0]) break;
+    if (!steps.includes(step)) steps.push(step);
+  }
+  if (steps.length > policy.shotRange[1]) return steps.slice(0, policy.shotRange[1]);
+  return steps.length ? steps : policy.defaultSteps.slice(0, policy.shotRange[0]);
+}
+
+function subtitleFromNarration(narration, fallback = "") {
+  const text = String(narration || fallback || "").trim();
+  const segments = text
+    .split(/[，。！？；：,.!?;:\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const picked = segments.find((item) => item.length >= 4 && item.length <= 18) || segments[0] || fallback;
+  return clipText(picked, 18);
+}
+
+function videoNarrationCharCount(material = {}) {
+  const hook = material.hook && typeof material.hook === "object" ? material.hook : { narration: material.hook || "" };
+  const script = Array.isArray(material.script) ? material.script : [];
+  return compactCharCount([hook.narration, ...script.map((shot) => shot.narration)].filter(Boolean).join(""));
+}
+
 function buildVideoMaterial(profile, topic) {
   const title = String(topic.title || "未命名选题");
-  const isShowcase = SHOWCASE_CATEGORY_IDS.has(String(topic.contentType || ""));
-  let structure = Array.isArray(topic.structure) && topic.structure.length ? topic.structure.slice() : ["开场", "展开", "可信细节", "引导"];
-  // 视频校验要求至少 2 个分镜，兜底也要满足。
-  if (structure.length < 2) structure = [...structure, "引导了解 / 到店咨询"];
+  const policy = videoDurationPolicy(topic.contentType);
+  const isShowcase = policy.kind === "showcase";
+  const structure = normalizeVideoSteps(topic.structure, policy);
   const materials = Array.isArray(topic.materials) && topic.materials.length ? topic.materials : ["场地真实画面"];
+  const hookNarration = isShowcase
+    ? `先带你真实看看${title}。`
+    : `很多家长都会问：${topic.parentQuestion || title}。`;
   const hook = {
-    narration: isShowcase ? `带你真实看看${title}` : `很多家长都在问：${topic.parentQuestion || title}`,
+    narration: hookNarration,
     visual: materials[0] || "球场真实画面",
-    onScreenText: title.length > 14 ? title.slice(0, 14) : title,
+    onScreenText: subtitleFromNarration(hookNarration, title),
   };
-  const script = structure.map((step, index) => ({
+  const script = structure.map((step, index) => {
+    const narration = isShowcase
+      ? `这里看${step}，重点是用真实画面说清楚，不夸张也不硬推。`
+      : `关于${step}，我们用一个简单判断来说：先看孩子的兴趣和状态，再看训练是否循序渐进，不要用夸张承诺做决定。`;
+    return {
     id: index + 1,
-    time: `${index * 6}-${index * 6 + 6}s`,
+    time: videoShotTime(index, structure.length, policy.estimatedDurationSeconds),
     visual: materials[index % materials.length] || "场地真实画面",
-    narration: isShowcase
-      ? `${step}`
-      : `关于「${step}」，简单说清楚：结合真实训练讲一点，不夸大。`,
-    onScreenText: step,
+    narration,
+    onScreenText: subtitleFromNarration(narration, step),
     intent: step,
-  }));
-  return {
+    };
+  });
+  const material = {
     type: "video",
     title,
-    durationHint: isShowcase ? "20-40s" : "30-50s",
+    durationHint: policy.durationHint,
+    estimatedDurationSeconds: policy.estimatedDurationSeconds,
     coverText: title.length > 18 ? title.slice(0, 18) : title,
     hook,
     script,
+    subtitleStyle: "key_points",
     shootingList: materials,
-    editingNotes: ["竖屏拍摄", "字幕短句", "前 3 秒必须出现球场或问题", "结尾放私信/进群动作"],
+    editingNotes: [
+      "竖屏拍摄",
+      "字幕用口播重点短句，不另写一套意思",
+      `目标口播字数 ${policy.narrationCharRange[0]}-${policy.narrationCharRange[1]} 字`,
+      "前 3 秒必须出现球场或问题",
+      "结尾放私信/进群动作",
+    ],
     publishCopy: `${title}\n\n${topic.purpose}\n\n${topic.suggestedCta || topic.cta}`,
+  };
+  material.narrationCharCount = videoNarrationCharCount(material);
+  return {
+    ...material,
   };
 }
 
@@ -3454,6 +4687,9 @@ function materialShapeForFormat(format) {
       type: "video",
       title: "string",
       durationHint: "string",
+      estimatedDurationSeconds: "number",
+      narrationCharCount: "number",
+      subtitleStyle: "key_points",
       coverText: "string",
       hook: { narration: "string", visual: "string", onScreenText: "string" },
       script: [{ time: "string", visual: "string", narration: "string", onScreenText: "string", intent: "string" }],
@@ -3543,18 +4779,21 @@ function formatSpecFor(format, brief = {}) {
     constraints: [`material.type 必须是 ${formatType}`],
   };
   if (formatType === "video") {
-    const isShowcase = SHOWCASE_CATEGORY_IDS.has(String(brief.contentType || ""));
+    const policy = videoDurationPolicy(brief.contentType);
+    const isShowcase = policy.kind === "showcase";
     spec.constraints.push(
-      "每个镜头分三部分：narration=口播逐字稿(教练能直接照着念的口语原话)，visual=画面/动作(拍什么)，onScreenText=字幕(精简大字，不等于口播全文)。",
-      "hook 是前 3 秒钩子：第一句口播(narration) + 第一个画面(visual) + 字幕(onScreenText)，要有明确钩子打法(痛点提问/反常识/冲突)，让人停下来。",
-      "durationHint 给目标时长(如 30-45s)，口播总字数要和时长匹配(约每秒 4-5 字)，不要写念不完或太空的脚本。",
+      `本条视频按题材使用时长策略：durationHint=${policy.durationHint}，estimatedDurationSeconds 约 ${policy.estimatedDurationSeconds}，script 镜头数控制在 ${policy.shotRange[0]}-${policy.shotRange[1]} 个。`,
+      `口播总字数 narrationCharCount 控制在 ${policy.narrationCharRange[0]}-${policy.narrationCharRange[1]} 字；按中文口播约每秒 4-5 字估算，不能生成念不完的脚本。`,
+      "每个镜头分三部分：narration=口播逐字稿(教练能直接照着念的口语原话)，visual=画面/动作(拍什么)，onScreenText=重点字幕。",
+      "subtitleStyle 必须是 key_points；onScreenText 是重点字幕，必须来自对应 narration 的关键词/短句，不能表达另一套意思，不能和口播割裂。",
+      "hook 是前 3 秒钩子：第一句口播(narration) + 第一个画面(visual) + 重点字幕(onScreenText)，要有明确钩子打法(痛点提问/反常识/冲突)，让人停下来。",
       "结尾镜头要有 CTA 口播(轻引导、不硬广)；publishCopy 是发布文案；shootingList 拍摄清单、editingNotes 轻量剪辑提示。",
       "内容要覆盖 brief 的 keyPoints、回答 parentQuestion、符合 contentGoal；不承诺效果/升学、不夸张、不编造案例。",
     );
     if (isShowcase) {
       spec.constraints.push(
         "本选题是真实展示类(实拍记录型)：以 visual 真实镜头为主，narration 简短(现场感/轻旁白即可)，不要长篇口播、不摆拍腔；真实记录，涉及学员需注明家长授权。",
-        "script 围绕真实场景的关键画面推进，4-6 个镜头即可。",
+        "script 围绕真实场景的关键画面推进，4-6 个镜头即可，画面承担主要信息。",
       );
     } else {
       spec.constraints.push(
@@ -3704,27 +4943,35 @@ function normalizeMaterial(raw, format, fallback) {
         visual: firstAvailable(rawHook?.visual, fbHook.visual, ""),
         onScreenText: firstAvailable(rawHook?.onScreenText, fbHook.onScreenText, ""),
       };
-    return {
-      type: "video",
-      title: firstAvailable(input.title, fallback.title),
-      durationHint: firstAvailable(input.durationHint, fallback.durationHint, "30-45s"),
-      coverText: firstAvailable(input.coverText, fallback.coverText),
-      hook,
-      script: Array.isArray(input.script) && input.script.length
-        ? input.script.map((shot, index) => ({
+    const normalizedScript = Array.isArray(input.script) && input.script.length
+      ? input.script.map((shot, index) => {
+        const narration = firstAvailable(shot.narration, shot.subtitle, fallback.script?.[index]?.narration, "");
+        return {
           id: index + 1,
           time: firstAvailable(shot.time, fallback.script?.[index]?.time, `${index * 5}-${index * 5 + 5}s`),
           visual: firstAvailable(shot.visual, fallback.script?.[index]?.visual, "场地真实画面"),
           // 兼容旧数据：无 narration 时用旧 subtitle 兜口播。
-          narration: firstAvailable(shot.narration, shot.subtitle, fallback.script?.[index]?.narration, ""),
-          onScreenText: firstAvailable(shot.onScreenText, shot.subtitle, fallback.script?.[index]?.onScreenText, ""),
+          narration,
+          onScreenText: firstAvailable(shot.onScreenText, shot.subtitle, subtitleFromNarration(narration), fallback.script?.[index]?.onScreenText, ""),
           intent: firstAvailable(shot.intent, fallback.script?.[index]?.intent, "推进内容"),
-        }))
-        : fallback.script,
+        };
+      })
+      : fallback.script;
+    const material = {
+      type: "video",
+      title: firstAvailable(input.title, fallback.title),
+      durationHint: firstAvailable(input.durationHint, fallback.durationHint, "30-45s"),
+      estimatedDurationSeconds: Number(input.estimatedDurationSeconds) || Number(fallback.estimatedDurationSeconds) || null,
+      coverText: firstAvailable(input.coverText, fallback.coverText),
+      hook,
+      script: normalizedScript,
+      subtitleStyle: input.subtitleStyle === "key_points" ? "key_points" : (fallback.subtitleStyle || "key_points"),
       shootingList: Array.isArray(input.shootingList) && input.shootingList.length ? input.shootingList : fallback.shootingList,
       editingNotes: Array.isArray(input.editingNotes) && input.editingNotes.length ? input.editingNotes : fallback.editingNotes,
       publishCopy: firstAvailable(input.publishCopy, fallback.publishCopy),
     };
+    material.narrationCharCount = Number(input.narrationCharCount) || Number(fallback.narrationCharCount) || videoNarrationCharCount(material);
+    return material;
   }
 
   if (formatType === "xhs_image") {
@@ -3922,79 +5169,527 @@ function buildTopicContent(profile, task = {}) {
   };
 }
 
-function buildCommunityPlan(profile, task = {}) {
-  const weeklyPlan = task.plan?.week ? task.plan : buildOperationPlan(profile, task);
-  const audience = audienceLabels[task.audience] || "群内成员";
+// 社群运营三类群：各自有独立的私域任务（承接/转化/留存/裂变），节奏与话术按群定制。
+const COMMUNITY_GROUP_TYPES = [
+  {
+    id: "prospect_parents",
+    label: "意向家长群",
+    audience: "还在了解、尚未报名的家长",
+    mission: "答疑解顾虑，把意向家长转化为体验课 / 报名",
+    rhythmFocus: "答疑 + 干货种草 + 体验课接龙",
+    scriptKinds: ["welcome", "announcement", "faq", "privateFollowUp", "trialSignup"],
+  },
+  {
+    id: "enrolled_parents",
+    label: "在读学员家长群",
+    audience: "已报名的在读学员家长",
+    mission: "留存陪伴、续费与转介绍",
+    rhythmFocus: "打卡反馈 + 成长展示 + 答疑",
+    scriptKinds: ["welcome", "announcement", "faq", "privateFollowUp", "renewal", "referral"],
+  },
+  {
+    id: "adult_players",
+    label: "成人约球群",
+    audience: "成人网球爱好者 / 球友",
+    mission: "约球促活、提高场地利用与口碑",
+    rhythmFocus: "约球接龙 + 水平匹配 + 轻社交",
+    scriptKinds: ["welcome", "announcement", "faq", "privateFollowUp", "matchSignup"],
+  },
+];
+
+const SCRIPT_KIND_LABELS = {
+  welcome: "入群欢迎语",
+  announcement: "群公告模板",
+  faq: "常见问答",
+  privateFollowUp: "高意向私聊跟进",
+  trialSignup: "体验课接龙",
+  matchSignup: "约球接龙",
+  renewal: "续费话术",
+  referral: "转介绍话术",
+};
+
+function resolveGroupType(id) {
+  return COMMUNITY_GROUP_TYPES.find((g) => g.id === id) || COMMUNITY_GROUP_TYPES[0];
+}
+
+// 每类群的一周动作骨架；kind=reuse 为干货日（复用一周计划公域方向）。
+const COMMUNITY_RHYTHM_TEMPLATES = {
+  prospect_parents: [
+    { day: "周一", kind: "icebreaker" },
+    { day: "周二", kind: "qa" },
+    { day: "周三", kind: "reuse" },
+    { day: "周四", kind: "case" },
+    { day: "周五", kind: "trialSignup" },
+    { day: "周六", kind: "reuse" },
+    { day: "周日", kind: "feedback" },
+  ],
+  enrolled_parents: [
+    { day: "周一", kind: "checkin" },
+    { day: "周二", kind: "growth" },
+    { day: "周三", kind: "reuse" },
+    { day: "周四", kind: "qa" },
+    { day: "周五", kind: "feedback" },
+    { day: "周六", kind: "reuse" },
+    { day: "周日", kind: "referralSoft" },
+  ],
+  adult_players: [
+    { day: "周一", kind: "social" },
+    { day: "周二", kind: "matchSignup" },
+    { day: "周三", kind: "reuse" },
+    { day: "周四", kind: "qa" },
+    { day: "周五", kind: "matchSignup" },
+    { day: "周六", kind: "social" },
+    { day: "周日", kind: "feedback" },
+  ],
+};
+
+function buildCommunityDay(kind, ctx) {
+  const { profile, day, reuseSlot } = ctx;
+  const brand = profile.shortName || profile.name || "球场";
+  if (kind === "reuse") {
+    const title = reuseSlot?.topicTitle || reuseSlot?.theme || reuseSlot?.directionHint || "本周公域主题";
+    const angle = reuseSlot?.topicAngle || reuseSlot?.directionHint || "";
+    return {
+      day,
+      action: "干货日 · 复用公域内容",
+      isReuse: true,
+      sourceTopic: title,
+      groupTopic: `把本周发出去的公域内容搬进群里聊：「${title}」`,
+      message: `这周我们在公域发了一条「${title}」。${angle ? angle + "。" : ""}群里的家人可以先看，看完有想问的直接在群里问，我会结合咱们${brand}的实际情况补充——群里问会回得更细。`,
+      interaction: "看完可以回复：A 还想看更多这类 B 有具体问题想问 C 想来现场看看",
+      followUp: "整理群里的提问，高意向单独私聊；高频问题沉淀进常见问答。",
+      risk: "复用公域成品时不要在群里改写出未确认的价格 / 时间 / 名额。",
+    };
+  }
+  const presets = {
+    icebreaker: {
+      action: "轻话题破冰",
+      groupTopic: "用轻松话题让群活跃起来",
+      message: "先问个轻松的：给孩子找运动，你最看重哪点？A 长个子/体态 B 专注力/坚持 C 有个长期爱好 D 社交。随便聊聊，我也好按大家的关注点多分享。",
+      interaction: "直接回复 A/B/C/D，或说说你家娃的情况",
+      followUp: "记下每位家长的关注点，后续推送/私聊更精准。",
+      risk: "只做轻互动，不要急着推销。",
+    },
+    qa: {
+      action: "集中答疑",
+      groupTopic: "开放提问，集中解答顾虑",
+      message: "今天是群里的答疑时间～关于学网球、孩子能不能跟上、怎么开始，有问题都可以问，我统一回。零基础、年龄、时间安排都能聊。",
+      interaction: "把你最想问的问题直接发群里",
+      followUp: "答疑后把高意向单独私聊跟进。",
+      risk: "不确定的信息先说‘以正式通知为准’，不要写死。",
+    },
+    case: {
+      action: "案例 · 化解顾虑",
+      groupTopic: "用真实场景化解‘孩子坐不住/跟不上’",
+      message: "常有家长担心‘我家孩子坐不住，能学网球吗’。其实网球课是动起来的，反而适合精力旺盛的孩子；教练会从挥拍、捡球小游戏开始，先让孩子有成就感。有同样顾虑的可以群里说说，我帮你具体分析。",
+      interaction: "回复你最担心的一点，我针对性解答",
+      followUp: "针对每个顾虑给方案，邀约到店体验。",
+      risk: "不夸大效果、不承诺成绩。",
+    },
+    trialSignup: {
+      action: "体验课接龙",
+      groupTopic: "发起本周体验课接龙",
+      message: "本周开放少量体验名额～想带孩子来的家长群里接龙，格式：『孩子年龄+方便时间段』，例：6岁/周六上午。我按接龙顺序统一安排，名额有限先到先得。",
+      interaction: "按『孩子年龄+方便时间』接龙",
+      followUp: "接龙后逐个私聊确认时间，发定位与注意事项。",
+      risk: "名额/时间以实际可排为准，不要超额承诺。",
+    },
+    feedback: {
+      action: "反馈收集",
+      groupTopic: "收集反馈，温和收口本周",
+      message: "周末啦～这周群里聊了不少，想听听大家：还有什么想了解的，或希望多分享哪方面？你的反馈决定下周群里聊什么。",
+      interaction: "一句话说说你想看的内容或还没解决的问题",
+      followUp: "汇总反馈定下周社群主题；高意向继续私聊。",
+      risk: "保持轻松，不要变成催单。",
+    },
+    checkin: {
+      action: "训练打卡",
+      groupTopic: "鼓励家长晒娃训练打卡",
+      message: "新的一周开始～欢迎家长晒一晒孩子上周的训练或在家练习的小视频/照片，互相鼓励。坚持最难，看到别的孩子也在练，娃更有动力。",
+      interaction: "发孩子训练照片/视频，或打卡『本周已练X次』",
+      followUp: "给每个打卡的孩子具体鼓励；亮点可做成成长展示。",
+      risk: "经家长同意再公开孩子影像。",
+    },
+    growth: {
+      action: "成长展示",
+      groupTopic: "展示学员阶段性进步",
+      message: "分享一个小进步：很多孩子从接不到球，到能连续对打几拍，背后是每周的坚持。我们会持续记录孩子的成长，也欢迎家长分享你观察到的变化～",
+      interaction: "说说你家娃最近的一个小变化",
+      followUp: "把典型成长整理成案例，用于转介绍与公域内容。",
+      risk: "如实展示，不夸大、不对比贬低其他孩子。",
+    },
+    referralSoft: {
+      action: "口碑 · 转介绍",
+      groupTopic: "自然带出转介绍",
+      message: "谢谢这周家长们的陪伴～如果觉得孩子练得开心、有变化，欢迎把我们推荐给身边同样在给孩子找运动的朋友。老学员介绍的新朋友，我们也会有专属的小心意。",
+      interaction: "身边有想了解的朋友，可以直接拉进群或私聊我",
+      followUp: "对接转介绍名单，给到老学员答谢。",
+      risk: "答谢规则以正式说明为准，不要群里临时承诺。",
+    },
+    social: {
+      action: "轻社交破冰",
+      groupTopic: "活跃球友氛围",
+      message: "球友们好～新的一周先报个到：大家一般什么时间方便打球？工作日晚上多还是周末多？也欢迎自报水平（新手/进阶/想找陪练），方便互相约。",
+      interaction: "报时间段 + 自报水平（新手/进阶）",
+      followUp: "按时间和水平帮球友互相牵线。",
+      risk: "保持开放友好，不排斥新手。",
+    },
+    matchSignup: {
+      action: "约球接龙",
+      groupTopic: "发起约球接龙",
+      message: "约球接龙来啦～想约球的按格式接龙：『日期+时间段+水平』，例：周六上午/进阶。人齐我帮忙协调场地，新手也别怕，可以约新手友好场。",
+      interaction: "按『日期+时间段+水平』接龙",
+      followUp: "凑齐人后确认场地并建临时小群/私聊。",
+      risk: "场地以实际可订为准。",
+    },
+  };
+  const p = presets[kind] || presets.qa;
+  return { day, action: p.action, isReuse: false, sourceTopic: "", groupTopic: p.groupTopic, message: p.message, interaction: p.interaction, followUp: p.followUp, risk: p.risk };
+}
+
+function buildCommunityScript(kind, ctx) {
+  const { profile, groupDef } = ctx;
+  const brand = profile.shortName || profile.name || "我们";
+  switch (kind) {
+    case "welcome":
+      return {
+        key: "welcome",
+        title: SCRIPT_KIND_LABELS.welcome,
+        type: "text",
+        content: `欢迎加入${brand}${groupDef.label}！我是这里的教练/运营。群里会定期分享网球科普、孩子成长记录${groupDef.id === "adult_players" ? "和约球/活动信息" : "和体验/活动信息"}。有任何问题随时在群里问，也可以私聊我。为了大家的体验，群里不发广告、不刷屏，谢谢配合～`,
+      };
+    case "announcement":
+      return {
+        key: "announcement",
+        title: SCRIPT_KIND_LABELS.announcement,
+        type: "text",
+        content: `【${brand}群公告】\n1. 本群用于${groupDef.mission}相关的分享与交流。\n2. 每天会有一个小话题/答疑，欢迎参与。\n3. ${groupDef.id === "adult_players" ? "约球、活动、场地信息" : "体验、活动信息"}会在群内第一时间同步。\n4. 价格/时间/名额以正式通知为准。\n有问题直接 @我 或私聊。`,
+      };
+    case "faq": {
+      const faqByGroup = {
+        prospect_parents: [
+          "零基础可以来吗？——可以，从挥拍和小游戏开始，不需要一上来就会打。",
+          "孩子多大适合？——按年龄、兴趣和身体状态看，可以先来体验判断。",
+          "怎么预约/收费？——以正式通知为准，可以先把方便的时间段发我登记意向。",
+          "需要自带装备吗？——初期可先用我们的，体验后再考虑添置。",
+          "孩子坐不住能学吗？——网球是动起来的，反而适合精力旺盛的孩子。",
+        ],
+        enrolled_parents: [
+          "请假能补课吗？——以正式补课规则为准，提前在群里/私聊说一声。",
+          "在家怎么辅助练习？——我会按孩子情况给小练习，家长配合鼓励即可。",
+          "什么时候需要升级装备？——按孩子进度来，不急着一步到位。",
+          "有没有比赛/展示机会？——会按阶段安排，提前在群里通知。",
+          "下一期怎么续/时间怎么排？——快上完时我会提前同步，帮你预留时间。",
+        ],
+        adult_players: [
+          "新手能约吗？——可以，群里有新手友好场，欢迎报名。",
+          "怎么订场/费用？——以实际可订与正式通知为准。",
+          "怎么找到水平相当的球友？——自报水平，我帮忙按水平牵线。",
+          "需要自带球拍吗？——建议自带，没有也可以先借用。",
+          "一个人也能来吗？——可以，接龙后我帮你凑局。",
+        ],
+      };
+      return { key: "faq", title: SCRIPT_KIND_LABELS.faq, type: "list", content: faqByGroup[groupDef.id] || faqByGroup.prospect_parents };
+    }
+    case "privateFollowUp": {
+      const fByGroup = {
+        prospect_parents: [
+          "（破冰）您好，看到您在群里关注孩子学网球，方便问下孩子多大、之前接触过球类吗？我按情况给您具体建议。",
+          "（解顾虑）您之前担心的[顾虑]，其实可以这样安排…要不要先来一次体验，让孩子自己感受下？",
+          "（邀约）本周六上午还有 1 个体验名额，要不要我先帮您留着？",
+        ],
+        enrolled_parents: [
+          "（关怀）这周孩子状态不错，[具体表现]，在家可以让他这样小练习一下…",
+          "（续费）孩子这期快上完了，下一期时间我先帮您预留，您看是否继续？",
+          "（转介绍）您身边如果有朋友也想给孩子找运动，欢迎推荐，老学员介绍有专属答谢。",
+        ],
+        adult_players: [
+          "（牵线）您和[球友]都是周末进阶水平，要不要我帮你们约一场？",
+          "（促活）本周六上午有球局，已经 3 个人了，您来凑一场？",
+          "（关怀）最近没怎么看到您打球，这周有空一起来活动下？",
+        ],
+      };
+      return { key: "privateFollowUp", title: SCRIPT_KIND_LABELS.privateFollowUp, type: "list", content: fByGroup[groupDef.id] || fByGroup.prospect_parents };
+    }
+    case "trialSignup":
+      return {
+        key: "trialSignup",
+        title: SCRIPT_KIND_LABELS.trialSignup,
+        type: "text",
+        content: "【本周体验课接龙】\n格式：孩子年龄 + 方便时间段（例：6岁/周六上午）\n1. \n2. \n3. \n名额有限，按接龙顺序安排，我会逐个私聊确认。",
+      };
+    case "matchSignup":
+      return {
+        key: "matchSignup",
+        title: SCRIPT_KIND_LABELS.matchSignup,
+        type: "text",
+        content: "【约球接龙】\n格式：日期 + 时间段 + 水平（新手/进阶，例：周六上午/进阶）\n1. \n2. \n3. \n人齐协调场地，新手友好，欢迎报名。",
+      };
+    case "renewal":
+      return {
+        key: "renewal",
+        title: SCRIPT_KIND_LABELS.renewal,
+        type: "list",
+        content: [
+          "（提前预告）孩子这期还剩 X 节，续报下一期可以保留现在的上课时间和教练。",
+          "（价值回顾）这一期孩子的变化：[具体]，建议趁状态连上，避免中断。",
+          "（临门）下一期名额开始排了，要不要我先帮您把时间锁上？",
+        ],
+      };
+    case "referral":
+      return {
+        key: "referral",
+        title: SCRIPT_KIND_LABELS.referral,
+        type: "list",
+        content: [
+          "（自然开口）孩子练得开心的话，欢迎把我们推荐给身边的朋友～",
+          "（答谢）老学员成功介绍新朋友，双方都有专属小心意（具体以正式说明为准）。",
+          "（提供工具）我整理了一段可以直接转发给朋友的介绍，需要的话发您。",
+        ],
+      };
+    default:
+      return null;
+  }
+}
+
+function communityReminders(groupDef) {
+  const base = [
+    "社群每天只做一个核心动作，不要连续刷屏。",
+    "群里先互动、再通知、再私聊跟进高意向。",
+    "没有确认的价格、时间、名额和规则，不要在群里写死。",
+  ];
+  const extra = {
+    prospect_parents: "答疑和体验接龙是转化重点，问完一定要私聊收口。",
+    enrolled_parents: "续费和转介绍要自然带出，先做好陪伴和成长展示。",
+    adult_players: "约球以促活和体验为主，照顾新手、控制场地节奏。",
+  };
+  return [...base, extra[groupDef.id]].filter(Boolean);
+}
+
+function communitySchedule(plan = {}) {
+  if (Array.isArray(plan.publishingSchedule) && plan.publishingSchedule.length) return plan.publishingSchedule;
+  if (Array.isArray(plan.week) && plan.week.length) return plan.week;
+  return [];
+}
+
+function resolveCommunityWeeklyPlan(profile, task = {}) {
+  return communitySchedule(task.plan).length ? task.plan : buildOperationPlan(profile, task);
+}
+
+function hasInvalidPlaceholder(value) {
+  if (typeof value === "string") return /\bundefined\b/.test(value);
+  if (Array.isArray(value)) return value.some(hasInvalidPlaceholder);
+  if (value && typeof value === "object") return Object.values(value).some(hasInvalidPlaceholder);
+  return false;
+}
+
+function buildCommunityPlan(profile, task = {}, groupDef = COMMUNITY_GROUP_TYPES[0]) {
+  const weeklyPlan = resolveCommunityWeeklyPlan(profile, task);
   const mode = operatingModeLabels[inferOperatingMode(profile, task)] || "日常运营";
-  const sourceDays = weeklyPlan.week?.length ? weeklyPlan.week : buildOperationPlan(profile, task).week;
-  const communityDays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"].map((day, index) => {
-    const source = sourceDays[index % sourceDays.length];
-    return { ...source, day };
+  const publicSlots = communitySchedule(weeklyPlan).filter(Boolean);
+  const template = COMMUNITY_RHYTHM_TEMPLATES[groupDef.id] || COMMUNITY_RHYTHM_TEMPLATES.prospect_parents;
+  let reuseCursor = 0;
+  const week = template.map(({ day, kind }) => {
+    let reuseSlot = null;
+    if (kind === "reuse" && publicSlots.length) {
+      reuseSlot = publicSlots[reuseCursor % publicSlots.length];
+      reuseCursor += 1;
+    }
+    return buildCommunityDay(kind, { profile, groupDef, day, reuseSlot });
   });
+  const scriptLibrary = groupDef.scriptKinds
+    .map((kind) => buildCommunityScript(kind, { profile, groupDef, task }))
+    .filter(Boolean);
 
   return {
     overview: {
-      title: `${profile.shortName || profile.name}本周社群运营`,
-      source: weeklyPlan.overview?.title || "一周运营计划",
+      title: `${profile.shortName || profile.name}本周${groupDef.label}运营`,
+      groupType: groupDef.id,
+      groupLabel: groupDef.label,
+      mission: groupDef.mission,
+      audience: groupDef.audience,
       mode,
-      audience,
-      principle: "社群话题跟随一周计划主题，但表达更轻、更互动、更适合收集意向。",
+      source: weeklyPlan.overview?.title || "一周运营计划",
+      principle: `${groupDef.label}聚焦：${groupDef.rhythmFocus}；干货日复用本周公域内容，其余天做互动与转化。`,
     },
-    week: communityDays.map((day) => {
-      const topic = topicFromScheduleSlot(day, profile, task);
-      return {
-        day: day.day,
-        sourceTopic: day.topicTitle,
-        pillar: day.pillarLabel,
-        goal: goalLabels[day.goal] || day.goal,
-        groupTopic: `今天围绕「${day.topicTitle}」聊一下：${day.topicAngle || "大家最想先了解哪一部分？"}`,
-        message: `今天同步一个和${profile.shortName || "球场"}有关的小主题：${day.topicTitle}。${day.topicAngle || topic.purpose}。有兴趣的朋友可以直接在群里回复，我这边会按实际信息继续补充。`,
-        interaction: communityInteractionForTopic(topic),
-        followUp: "群里收集回复，并私聊高意向用户；公域内容发布后的高频问题可以带回群里继续答疑。",
-        risk: day.risk || topic.risk,
-      };
-    }),
-    faq: [
-      {
-        question: "零基础可以来吗？",
-        short: "可以，零基础可以先从轻量体验开始，不需要一上来就会打。",
-        follow: "你是自己想体验，还是想给孩子了解？我可以按情况给你更具体的建议。",
-      },
-      {
-        question: "怎么预约？",
-        short: "预约方式以我们正式同步为准。你可以先把想来的时间段发我，我帮你记录意向。",
-        follow: "大概是工作日晚上、周末白天，还是想先看看场地？",
-      },
-      {
-        question: "一个人来可以吗？",
-        short: "可以先了解，后续也会有社群约球和体验安排。",
-        follow: "你更偏向找球友约打，还是想先上一次体验？",
-      },
-      {
-        question: "孩子适合吗？",
-        short: "可以先看孩子年龄、兴趣和身体状态，不建议用统一标准判断。",
-        follow: "孩子多大了？之前有没有接触过球类运动？",
-      },
-    ],
-    reminders: [
-      "社群每天只做一个核心动作，不要连续刷屏。",
-      "群里先互动，再通知，再私聊跟进高意向用户。",
-      "活动期可以提高提醒频率；日常期以轻话题和答疑为主。",
-      "没有确认的价格、时间、名额和规则，不要在群里写死。",
-    ],
+    week,
+    scriptLibrary,
+    reminders: communityReminders(groupDef),
   };
 }
 
-function communityInteractionForTopic(topic) {
-  const interactions = {
-    opening: "可以回复：A 想看场地 B 想知道位置 C 想了解开放时间 D 想进群等通知",
-    adult_beginner: "可以回复：A 不会打担心尴尬 B 不知道装备 C 想先体验 D 想找人一起打",
-    junior: "可以回复：A 孩子年龄 B 是否零基础 C 想先体验 D 想了解上课安排",
-    community: "可以回复：A 周末想约 B 工作日晚上 C 想找同水平球友 D 先观望",
-    booking: "可以回复：A 想订场 B 想问价格 C 想看时间段 D 想了解规则",
-    trust: "可以回复：A 想看流程 B 想问教练 C 想了解强度 D 想先体验",
+function communityMessages(profile, task, groupDef, weeklyPlan, stagePolicy = DEFAULT_STAGE_POLICY) {
+  const publicDirections = communitySchedule(weeklyPlan)
+    .map((slot) => slot.topicTitle || slot.theme || slot.directionHint)
+    .filter(Boolean)
+    .slice(0, 6);
+  const scriptKindList = groupDef.scriptKinds.map((k) => `${k}(${SCRIPT_KIND_LABELS[k] || k})`).join("、");
+  return [
+    {
+      role: "system",
+      content: [
+        "你是网球场私域社群运营负责人。社群运营属于『私域承接 → 转化 → 留存 → 裂变』，与公域获客（一周计划）是不同的活。",
+        `本次只服务一类群：${groupDef.label}（${groupDef.audience}）；这个群的核心任务是：${groupDef.mission}；节奏侧重：${groupDef.rhythmFocus}。`,
+        "产出两块：1) 本周社群节奏 week（周一到周日共 7 天，每天一个核心动作，促活/转化导向，不要照搬公域选题）；2) 话术库 scriptLibrary（可复用文案）。",
+        "week 里要有 1-2 个『干货日』(isReuse=true)：把本周公域内容搬进群二次承接，并加一句进群专属钩子，引导群内提问/到店；其余天围绕互动、答疑、接龙、打卡等。",
+        `scriptLibrary 只产这些种类：${scriptKindList}；每条给 key、title、type(text 或 list)、content(text 为字符串，list 为字符串数组)。`,
+        "不得编造价格、时间、名额、优惠等未确认信息；涉及时统一写‘以正式通知为准’。risk 要体现 profile.avoid。",
+        "输出必须是严格 JSON，不要 Markdown，不要解释。",
+      ].join("\n"),
+    },
+    {
+      role: "user",
+      content: JSON.stringify({
+        taskType: "community_operation_plan",
+        venueProfile: {
+          name: profile.name,
+          shortName: profile.shortName,
+          stage: profile.stage,
+          city: profile.city,
+          highlights: profile.highlights,
+          avoid: profile.avoid,
+        },
+        groupType: groupDef.id,
+        weeklyInput: { focus: task.focus || "", eventInfo: task.eventInfo || "" },
+        publicContentThisWeek: publicDirections,
+        stageContentMix: stageMixGuidance(stagePolicy),
+        requiredShape: {
+          overview: { title: "string", mission: "string", principle: "string" },
+          week: [{
+            day: "周一|周二|周三|周四|周五|周六|周日",
+            action: "string，这一天的核心动作名",
+            isReuse: "boolean，是否干货日",
+            sourceTopic: "string，干货日填复用的公域主题，否则空",
+            groupTopic: "string，今天群里聊什么",
+            message: "string，可直接发群的消息文案",
+            interaction: "string，引导群成员怎么回复/参与",
+            followUp: "string，群后跟进动作",
+            risk: "string，风险提示",
+          }],
+          scriptLibrary: [{ key: "string", title: "string", type: "text|list", content: "string 或 string[]" }],
+          reminders: ["string"],
+        },
+        constraints: [
+          "week 必须正好 7 天，周一到周日各一条。",
+          "至少 1 天 isReuse=true，且 sourceTopic 来自 publicContentThisWeek。",
+          `scriptLibrary 必须覆盖：${groupDef.scriptKinds.join("、")}，不要产其它种类。`,
+          "message 是可直接复制发群的中文文案，口语、亲切、不刷屏、不夸大。",
+          "不写死价格/时间/名额；未确认信息写‘以正式通知为准’。",
+        ],
+      }),
+    },
+  ];
+}
+
+function isValidCommunityPlan(data, groupDef) {
+  if (!data || !data.overview || !Array.isArray(data.week) || data.week.length !== 7) return false;
+  if (!Array.isArray(data.scriptLibrary) || !data.scriptLibrary.length) return false;
+  if (hasInvalidPlaceholder(data)) return false;
+  const days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+  const hasReuse = data.week.some((item) => item && item.isReuse === true);
+  if (!hasReuse) return false;
+  const hasMissingDayText = days.some((day, index) => {
+    const item = data.week.find((d) => d && d.day === day) || data.week[index];
+    return !item
+      || !String(item.action || "").trim()
+      || !String(item.groupTopic || "").trim()
+      || !String(item.message || "").trim()
+      || !String(item.interaction || "").trim()
+      || !String(item.followUp || "").trim();
+  });
+  if (hasMissingDayText) return false;
+  const keys = new Set(data.scriptLibrary.map((s) => s && s.key));
+  return groupDef.scriptKinds.every((k) => keys.has(k));
+}
+
+function assembleCommunityPlan(profile, task, groupDef, aiOutput, weeklyPlan) {
+  const fallback = buildCommunityPlan(profile, task, groupDef);
+  const dayOrder = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+  const publicSlots = communitySchedule(weeklyPlan).filter(Boolean);
+  let reuseCursor = 0;
+  const week = dayOrder.map((day, index) => {
+    const raw = (aiOutput.week || []).find((d) => d && d.day === day) || aiOutput.week?.[index] || {};
+    const fb = fallback.week[index];
+    const isReuse = typeof raw.isReuse === "boolean" ? raw.isReuse : Boolean(fb.isReuse);
+    let sourceTopic = String(raw.sourceTopic || fb.sourceTopic || "").trim();
+    if (isReuse && !sourceTopic && publicSlots.length) {
+      const slot = publicSlots[reuseCursor % publicSlots.length];
+      reuseCursor += 1;
+      sourceTopic = slot.topicTitle || slot.theme || slot.directionHint || "";
+    }
+    return {
+      day,
+      action: String(raw.action || fb.action || "").trim(),
+      isReuse,
+      sourceTopic,
+      groupTopic: String(raw.groupTopic || fb.groupTopic || "").trim(),
+      message: String(raw.message || fb.message || "").trim(),
+      interaction: String(raw.interaction || fb.interaction || "").trim(),
+      followUp: String(raw.followUp || fb.followUp || "").trim(),
+      risk: String(raw.risk || fb.risk || "").trim(),
+    };
+  });
+  const scriptLibrary = groupDef.scriptKinds.map((kind) => {
+    const raw = (aiOutput.scriptLibrary || []).find((s) => s && s.key === kind);
+    const fb = fallback.scriptLibrary.find((s) => s.key === kind);
+    if (!raw) return fb;
+    const type = raw.type === "list" ? "list" : (fb?.type || "text");
+    let content = raw.content;
+    if (type === "list") content = Array.isArray(content) ? content.filter(Boolean) : (fb?.content || []);
+    else content = typeof content === "string" && content.trim() ? content : (fb?.content || "");
+    return { key: kind, title: SCRIPT_KIND_LABELS[kind] || raw.title || kind, type, content };
+  });
+  return {
+    overview: {
+      title: String(aiOutput.overview?.title || fallback.overview.title),
+      groupType: groupDef.id,
+      groupLabel: groupDef.label,
+      mission: String(aiOutput.overview?.mission || groupDef.mission),
+      audience: groupDef.audience,
+      mode: fallback.overview.mode,
+      source: fallback.overview.source,
+      principle: String(aiOutput.overview?.principle || fallback.overview.principle),
+    },
+    week,
+    scriptLibrary,
+    reminders: Array.isArray(aiOutput.reminders) && aiOutput.reminders.length ? aiOutput.reminders : fallback.reminders,
   };
-  return interactions[topic.goal] || "可以回复：A 想了解场地 B 想体验 C 想约球 D 想进群";
+}
+
+async function buildCommunityPlanWithAi(profile, task = {}, groupDef = COMMUNITY_GROUP_TYPES[0]) {
+  const weeklyPlan = resolveCommunityWeeklyPlan(profile, task);
+  const settings = await loadAiSettings();
+  const resolved = resolveAiProvider(settings);
+
+  if (!resolved) {
+    return { ...buildCommunityPlan(profile, task, groupDef), aiMeta: buildLocalAiMeta(settings) };
+  }
+
+  const { provider, config } = resolved;
+  const providerLabel = providerDefaults[provider]?.label || provider;
+
+  try {
+    const framework = await loadAngleFramework();
+    const stagePolicy = resolveStagePolicy(profile, framework);
+    const text = await callAiText(provider, config, communityMessages(profile, task, groupDef, weeklyPlan, stagePolicy));
+    const output = extractJson(text);
+    if (!isValidCommunityPlan(output, groupDef)) throw new Error("社群方案输出结构不完整");
+    return {
+      ...assembleCommunityPlan(profile, task, groupDef, output, weeklyPlan),
+      aiMeta: { source: "ai", provider: providerLabel, model: config.model, steps: ["community"] },
+    };
+  } catch (error) {
+    return {
+      ...buildCommunityPlan(profile, task, groupDef),
+      aiMeta: {
+        source: "fallback",
+        provider: providerLabel,
+        model: config?.model || "",
+        error: error.message || "AI 生成失败，已回退本地规则",
+        steps: ["community"],
+      },
+    };
+  }
 }
 
 function requestPathname(req) {
@@ -4037,11 +5732,43 @@ async function serveStatic(req, res) {
 
 const server = http.createServer(async (req, res) => {
   const pathname = requestPathname(req);
+  currentRequest = req;
 
   try {
     if (req.method === "OPTIONS") {
       sendJson(res, 200, { ok: true });
       return;
+    }
+
+    // 鉴权：ACCESS_TOKEN 未设置 = 不启用（本地开发）；设置后所有 API 和首屏都需要 token。
+    if (accessToken) {
+      const supplied = extractTokenFromRequest(req);
+      if (!supplied || supplied !== accessToken) {
+        // API 路径返回 401 JSON；首屏 GET 返回一个最简单的 HTML 提示输入 token，
+        // 这样未授权用户连登录页以外的资源都看不到。
+        if (pathname.startsWith("/api/")) {
+          unauthorized(res, pathname);
+          return;
+        }
+        res.writeHead(401, { "content-type": "text/html; charset=utf-8" });
+        res.end(`<!doctype html><meta charset="utf-8"><title>请输入访问令牌</title>
+<style>body{font-family:system-ui,sans-serif;max-width:420px;margin:80px auto;padding:0 24px;color:#1f2937}
+h1{font-size:20px;margin:0 0 8px} p{color:#6b7280;font-size:14px;margin:0 0 16px}
+input{width:100%;padding:10px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;box-sizing:border-box}
+button{margin-top:12px;padding:10px 16px;background:#111827;color:#fff;border:0;border-radius:8px;font-size:14px;cursor:pointer;width:100%}
+.err{color:#b91c1c;font-size:13px;margin-top:8px;min-height:18px}</style>
+<h1>Super Tennis Agent</h1><p>这是一个团队私有服务。请输入访问令牌继续。</p>
+<input id="t" placeholder="访问令牌" autofocus><button onclick="go()">进入</button><div class="err" id="e"></div>
+<script>
+function go(){
+  var v=document.getElementById('t').value.trim();
+  if(!v){document.getElementById('e').textContent='请输入令牌';return}
+  var u=new URL(location.href);u.searchParams.set('token',v);location.replace(u.toString());
+}
+document.getElementById('t').addEventListener('keydown',function(e){if(e.key==='Enter')go()});
+</script>`);
+        return;
+      }
     }
 
     if (req.method === "GET" && pathname === "/api/health") {
@@ -4165,7 +5892,17 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && pathname === "/api/agent/route") {
       const body = await readJson(req);
       const profile = body.profile || await loadProfile();
-      sendJson(res, 200, await buildAgentRoute(profile, body.message || body.text || "", body.context || {}));
+      const history = Array.isArray(body.history)
+        ? body.history.filter((h) => h && (h.role === "user" || h.role === "assistant") && typeof h.text === "string").slice(-6)
+        : [];
+      sendJson(res, 200, await buildAgentRoute(profile, body.message || body.text || "", body.context || {}, history));
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/agent/campaign-plan") {
+      const body = await readJson(req);
+      const profile = body.profile || await loadProfile();
+      sendJson(res, 200, await buildCampaignPlanWithAi(profile, body.task || {}));
       return;
     }
 
@@ -4187,7 +5924,6 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const profile = body.profile || await loadProfile();
       const result = await buildTopicContentWithAi(profile, body.task || {});
-      await bumpTopicProduceCount(body.task?.topicId);
       sendJson(res, 200, result);
       return;
     }
@@ -4210,7 +5946,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && pathname === "/api/community-plan") {
       const body = await readJson(req);
       const profile = body.profile || await loadProfile();
-      sendJson(res, 200, buildCommunityPlan(profile, body.task || {}));
+      const groupDef = resolveGroupType(body.task?.groupType);
+      sendJson(res, 200, await buildCommunityPlanWithAi(profile, body.task || {}, groupDef));
       return;
     }
 
@@ -4221,8 +5958,9 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && pathname === "/api/finished-content") {
       const body = await readJson(req);
-      await upsertFinishedItem(body.item || {});
-      sendJson(res, 200, await loadFinishedContent());
+      const saved = await upsertFinishedItem(body.item || {});
+      if (saved.createdItem) await bumpTopicProduceCount(body.item?.topicId);
+      sendJson(res, 200, saved);
       return;
     }
 
@@ -4233,20 +5971,119 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "GET" && pathname === "/api/weekly-plan") {
-      sendJson(res, 200, await loadWeeklyPlan());
+    if (req.method === "GET" && pathname === "/api/weekly-plans") {
+      sendJson(res, 200, await loadWeeklyPlans());
       return;
     }
 
-    if (req.method === "POST" && pathname === "/api/weekly-plan") {
+    if (req.method === "POST" && pathname === "/api/weekly-plans") {
       const body = await readJson(req);
-      sendJson(res, 200, await saveWeeklyPlan(body.plan || null));
+      const { entry, plans } = await createWeeklyPlanEntry(body.plan || null);
+      sendJson(res, 200, { entry, plans });
       return;
     }
 
-    if (req.method === "DELETE" && pathname === "/api/weekly-plan") {
-      await saveWeeklyPlan(null);
-      sendJson(res, 200, { ok: true });
+    if (req.method === "PUT" && pathname.startsWith("/api/weekly-plans/")) {
+      const id = decodeURIComponent(pathname.slice("/api/weekly-plans/".length));
+      const body = await readJson(req);
+      const { entry, plans } = await updateWeeklyPlanEntry(id, body.plan || null);
+      if (!entry) {
+        sendJson(res, 404, { error: "计划不存在" });
+        return;
+      }
+      sendJson(res, 200, { entry, plans });
+      return;
+    }
+
+    if (req.method === "DELETE" && pathname.startsWith("/api/weekly-plans/")) {
+      const id = decodeURIComponent(pathname.slice("/api/weekly-plans/".length));
+      const { plans } = await deleteWeeklyPlanEntry(id);
+      sendJson(res, 200, { plans });
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/community-plans") {
+      sendJson(res, 200, await loadCommunityPlans());
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/community-plans") {
+      const body = await readJson(req);
+      const { entry, plans } = await createCommunityPlanEntry({
+        plan: body.plan || null,
+        groupType: body.groupType,
+        planId: body.planId,
+        planTitle: body.planTitle,
+      });
+      sendJson(res, 200, { entry, plans });
+      return;
+    }
+
+    if (req.method === "DELETE" && pathname.startsWith("/api/community-plans/")) {
+      const id = decodeURIComponent(pathname.slice("/api/community-plans/".length));
+      const { plans } = await deleteCommunityPlanEntry(id);
+      sendJson(res, 200, { plans });
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/campaign-plans") {
+      sendJson(res, 200, await loadCampaignPlans());
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/campaign-plans") {
+      const body = await readJson(req);
+      const { entry, plans } = await createCampaignPlanEntry({
+        plan: body.plan || null,
+        brief: body.brief,
+        planId: body.planId,
+        planTitle: body.planTitle,
+      });
+      sendJson(res, 200, { entry, plans });
+      return;
+    }
+
+    if (req.method === "DELETE" && pathname.startsWith("/api/campaign-plans/")) {
+      const id = decodeURIComponent(pathname.slice("/api/campaign-plans/".length));
+      const { plans } = await deleteCampaignPlanEntry(id);
+      sendJson(res, 200, { plans });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/campaign-materials/generate") {
+      const body = await readJson(req);
+      const profile = body?.profile || (await loadProfile());
+      const validated = buildCampaignMaterialsRequest().validate(body || {});
+      if (validated.error) {
+        sendJson(res, 400, { error: validated.error });
+        return;
+      }
+      const plan = body?.plan || {};
+      const summary = summarizeCampaignPlanForMaterials(plan);
+      const { materials, aiMeta } = await buildCampaignMaterialDraftsWithAi(profile, summary, validated.formats);
+      const idPrefix = `campaign-${validated.campaignId}`;
+      const items = materials.map((m) => ({
+        id: `${idPrefix}-${m.format}`,
+        topicId: "",
+        topicTitle: m.label,
+        title: m.material.title,
+        format: m.format,
+        contentType: "campaign_material",
+        category: "campaign_material",
+        planId: "",
+        planTitle: validated.campaignTitle,
+        campaignId: validated.campaignId,
+        campaignTitle: validated.campaignTitle,
+        material: { type: m.format, title: m.material.title, sections: m.material.sections },
+        brief: { campaignId: validated.campaignId, campaignTitle: validated.campaignTitle, format: m.format, label: m.label },
+      }));
+      const saved = [];
+      for (const item of items) {
+        const result = await upsertFinishedItem(item);
+        if (result?.createdItem) await bumpTopicProduceCount(item.topicId);
+        saved.push(item.id);
+      }
+      sendJson(res, 200, { materials: items, savedIds: saved, aiMeta });
       return;
     }
 
@@ -4271,4 +6108,12 @@ server.on("error", (error) => {
     return;
   }
   throw error;
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[unhandledRejection]", reason);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("[uncaughtException]", error);
 });
