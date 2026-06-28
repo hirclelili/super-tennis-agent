@@ -1754,6 +1754,19 @@ function openCampaignHistoryEntry(id) {
   renderCampaignPlan(entry.plan);
 }
 
+// 从成品库的「按活动」视图里点击活动标题：跳到活动策划页并打开这个活动。
+function openCampaignFromLibrary(campaignId) {
+  const entry = campaignsIndex.find((item) => item.id === campaignId);
+  if (!entry) {
+    showToast("活动已删除或未找到", "error");
+    return;
+  }
+  currentCampaignBrief = entry.brief || "";
+  currentCampaignId = entry.id;
+  currentCampaignPlan = entry.plan || null;
+  navigate({ module: "campaign", page: null, slotIndex: null });
+}
+
 function campaignHistoryMarkup() {
   if (!campaignsIndex.length) return "";
   return `
@@ -2517,6 +2530,7 @@ function renderLibraryModeToggle() {
   return `
     <div class="library-mode-toggle">
       <button class="library-mode-chip ${libraryViewMode === "byPlan" ? "is-active" : ""}" data-library-mode="byPlan" type="button">按一周计划</button>
+      <button class="library-mode-chip ${libraryViewMode === "byCampaign" ? "is-active" : ""}" data-library-mode="byCampaign" type="button">按活动</button>
       <button class="library-mode-chip ${libraryViewMode === "flat" ? "is-active" : ""}" data-library-mode="flat" type="button">全部成品</button>
     </div>
   `;
@@ -2535,6 +2549,11 @@ function renderFinishedLibrary() {
 
   if (libraryViewMode === "byPlan") {
     els.libraryResult.innerHTML = `${toggle}${renderFinishedByPlan(items)}`;
+    return;
+  }
+
+  if (libraryViewMode === "byCampaign") {
+    els.libraryResult.innerHTML = `${toggle}${renderFinishedByCampaign(items)}`;
     return;
   }
 
@@ -2640,6 +2659,52 @@ function renderFinishedByPlan(items) {
     return `<article class="empty-state"><h2>暂无可索引内容</h2><p>先在一周计划里采用选题并定稿内容。</p></article>`;
   }
   return `<div class="index-plan-list">${planBlocks}${leftoverBlock}</div>`;
+}
+
+// 按活动分组：每个 campaignId 一组，里面是该活动产出的所有物料。
+// 物料卡片继续用 renderFinishedCard（展开全文 / 复制 / 重新生成该项 / 删除都正常）。
+function renderFinishedByCampaign(items) {
+  const groups = new Map();
+  for (const item of items) {
+    if (typeof item.format !== "string" || !item.format.startsWith("campaign_")) continue;
+    if (!item.campaignId) continue;
+    if (!groups.has(item.campaignId)) {
+      groups.set(item.campaignId, {
+        campaignId: item.campaignId,
+        campaignTitle: item.campaignTitle || "活动方案",
+        items: [],
+      });
+    }
+    groups.get(item.campaignId).items.push(item);
+  }
+  if (!groups.size) {
+    return `<article class="empty-state"><h2>暂无活动物料</h2><p>去活动策划页生成物料后，会自动归到对应活动下方。</p></article>`;
+  }
+  // 按最近更新时间排，让最新的活动在最上面
+  const sortedGroups = [...groups.values()].sort((a, b) => {
+    const aTime = Math.max(...a.items.map((it) => new Date(it.updatedAt || 0).getTime()));
+    const bTime = Math.max(...b.items.map((it) => new Date(it.updatedAt || 0).getTime()));
+    return bTime - aTime;
+  });
+  const blocks = sortedGroups.map((group) => {
+    const lastUpdate = group.items
+      .map((it) => it.updatedAt)
+      .filter(Boolean)
+      .sort()
+      .pop();
+    const time = lastUpdate ? new Date(lastUpdate).toLocaleString("zh-CN") : "";
+    return `
+      <section class="index-plan">
+        <div class="index-plan-head">
+          <button class="index-plan-title" data-index-campaign-open="${escapeHtml(group.campaignId)}" type="button">${escapeHtml(group.campaignTitle)}</button>
+          <span class="index-plan-time">${escapeHtml(time)}</span>
+          <span class="index-slot-count">${group.items.length} 项物料</span>
+        </div>
+        <div class="index-card-list">${group.items.map((item) => renderFinishedCard(item)).join("")}</div>
+      </section>
+    `;
+  }).join("");
+  return `<div class="index-plan-list">${blocks}</div>`;
 }
 
 async function openContentFromIndexSlot(planId, slotIndex) {
@@ -5311,6 +5376,8 @@ els.libraryView.addEventListener("click", (event) => {
   if (mode) { libraryViewMode = mode.dataset.libraryMode; renderFinishedLibrary(); return; }
   const planOpen = event.target.closest("[data-index-plan-open]");
   if (planOpen) { openPlan(planOpen.dataset.indexPlanOpen); return; }
+  const campaignOpen = event.target.closest("[data-index-campaign-open]");
+  if (campaignOpen) { openCampaignFromLibrary(campaignOpen.dataset.indexCampaignOpen); return; }
   const slotContent = event.target.closest("[data-index-slot]");
   if (slotContent) { openContentFromIndexSlot(slotContent.dataset.indexPlan, Number(slotContent.dataset.indexSlot)); return; }
   const filter = event.target.closest("[data-library-filter]");
