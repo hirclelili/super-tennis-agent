@@ -130,7 +130,7 @@ const CAMPAIGN_MATERIAL_DESCRIPTIONS = {
 };
 let topicsReady = false;
 let activeView = "plan";
-let agentSession = { open: false, expanded: false, messages: [], priorBrief: null, lastMode: null, busy: false, pendingResult: false, activeResult: null, activeFormat: null };
+let agentSession = { open: false, expanded: false, messages: [], priorBrief: null, lastMode: null, busy: false, pendingResult: false, activeResult: null, activeFormat: null, selectedMaterial: null };
 let currentRoute = { module: "plan", page: "setup", slotIndex: null };
 let profileReturnRoute = null;
 let apiBase = "";
@@ -367,6 +367,14 @@ function materialTypeMeta(type) {
   };
 }
 
+function firstText(...values) {
+  for (const value of values) {
+    const text = String(value ?? "").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
 function buildBriefFromTopic(topic) {
   return {
     title: topic.title || "",
@@ -376,6 +384,51 @@ function buildBriefFromTopic(topic) {
     parentQuestion: topic.parentQuestion || "",
     contentGoal: topic.contentGoal || topic.contentGoalLabel || "",
     risk: topic.risk || "",
+  };
+}
+
+function applyTopicBriefToSlot(slot, topic) {
+  if (!slot || !topic) return slot;
+  const brief = buildBriefFromTopic(topic);
+  slot.topicId = topic.id;
+  slot.topicTitle = topic.title;
+  slot.topicAngle = firstText(brief.topicAngle, topic.purpose, slot.topicAngle);
+  slot.topicBrief = {
+    ...brief,
+    title: firstText(brief.title, topic.title),
+    materials: Array.isArray(topic.materials) ? topic.materials.slice() : [],
+    contentType: firstText(topic.contentType, slot.contentType),
+  };
+  slot.topicKeyPoints = Array.isArray(brief.keyPoints) ? brief.keyPoints.slice() : [];
+  slot.topicCta = brief.cta || "";
+  slot.topicParentQuestion = brief.parentQuestion || "";
+  slot.topicContentGoal = brief.contentGoal || "";
+  slot.topicRisk = brief.risk || topic.risk || "";
+  slot.topicStructure = Array.isArray(topic.structure) ? topic.structure.slice() : [];
+  slot.topicMaterials = Array.isArray(topic.materials) ? topic.materials.slice() : [];
+  slot.topicPurpose = topic.purpose || "";
+  if (topic.contentType) slot.contentType = topic.contentType;
+  if (Array.isArray(topic.materials)) slot.materialNeed = topic.materials.slice();
+  return slot;
+}
+
+function buildBriefFromSlot(slot, topic = null) {
+  const topicBrief = topic ? buildBriefFromTopic(topic) : {};
+  const stored = slot?.topicBrief && typeof slot.topicBrief === "object" ? slot.topicBrief : {};
+  const storedKeyPoints = Array.isArray(stored.keyPoints) ? stored.keyPoints : [];
+  const slotKeyPoints = Array.isArray(slot?.topicKeyPoints) ? slot.topicKeyPoints : [];
+  const slotStructure = Array.isArray(slot?.topicStructure) ? slot.topicStructure : [];
+  const topicKeyPoints = Array.isArray(topicBrief.keyPoints) ? topicBrief.keyPoints : [];
+  return {
+    title: firstText(stored.title, topicBrief.title, slot?.topicTitle),
+    topicAngle: firstText(stored.topicAngle, slot?.topicAngle, topicBrief.topicAngle, slot?.directionHint, slot?.theme),
+    keyPoints: storedKeyPoints.length
+      ? storedKeyPoints.slice()
+      : (slotKeyPoints.length ? slotKeyPoints.slice() : (slotStructure.length ? slotStructure.slice() : topicKeyPoints.slice())),
+    cta: firstText(stored.cta, slot?.topicCta, topicBrief.cta, slot?.action),
+    parentQuestion: firstText(stored.parentQuestion, slot?.topicParentQuestion, topicBrief.parentQuestion),
+    contentGoal: firstText(stored.contentGoal, slot?.topicContentGoal, topicBrief.contentGoal),
+    risk: firstText(stored.risk, slot?.topicRisk, slot?.risk, topicBrief.risk),
   };
 }
 
@@ -419,6 +472,7 @@ function videoSubtitleStyleLabel(style) {
 
 function materialToText(m) {
   if (!m) return "";
+  if (m.editedText) return String(m.editedText);
   if (m.type === "video") {
     const hook = m.hook && typeof m.hook === "object" ? m.hook : { narration: m.hook || "" };
     const script = Array.isArray(m.script) ? m.script : [];
@@ -488,6 +542,18 @@ function materialToText(m) {
       .join("\n\n");
   }
   return JSON.stringify(m, null, 2);
+}
+
+function entryText(entry) {
+  if (!entry) return "";
+  return entry.editedText || materialToText(entry.material);
+}
+
+function materialForPersist(entry) {
+  if (!entry?.material) return null;
+  return entry.editedText
+    ? { ...entry.material, editedText: entry.editedText }
+    : entry.material;
 }
 
 function updateContext() {
@@ -1375,6 +1441,9 @@ function renderCommunity(material) {
 }
 
 function renderMaterial(material) {
+  if (material?.editedText) {
+    return `<article class="content-card edited-material"><pre>${escapeHtml(material.editedText)}</pre></article>`;
+  }
   if (material.type === "video") return renderVideo(material);
   if (material.type === "xhs_image") return renderXhs(material);
   if (material.type === "moments_text") return renderMoments(material);
@@ -1428,6 +1497,7 @@ function renderMaterialBlock(format, entry) {
   const meta = materialTypeMeta(format);
   const isFinal = entry.status === "final";
   const history = Array.isArray(entry.history) ? entry.history : [];
+  const bodyHtml = `<article class="content-card edited-material"><pre>${escapeHtml(entryText(entry))}</pre></article>`;
   return `
     <div class="material-block ${isFinal ? "is-final" : ""}" data-format-block="${escapeHtml(format)}">
       <div class="material-block-head">
@@ -1440,11 +1510,19 @@ function renderMaterialBlock(format, entry) {
           <button class="${isFinal ? "secondary" : "primary"} material-finalize" data-format="${escapeHtml(format)}" type="button">${isFinal ? "取消定稿" : "定稿"}</button>
         </div>
       </div>
-      ${renderMaterial(entry.material)}
+      <div class="material-editable" data-material-editable="${escapeHtml(format)}" contenteditable="true" spellcheck="false">${bodyHtml}</div>
       ${renderMaterialAiMeta(entry.aiMeta)}
       <div class="material-refine">
-        <input class="material-refine-input" data-format="${escapeHtml(format)}" type="text" placeholder="定向微调，如：更口语 / 标题再来5个 / 第2镜头换个开场" />
-        <button class="secondary material-refine-apply" data-format="${escapeHtml(format)}" type="button">微调</button>
+        <button class="secondary material-refine-apply" data-format="${escapeHtml(format)}" type="button">用 AI 修改选中文字</button>
+        <span>选中一段文字后，在对话助手里说怎么改</span>
+      </div>
+      <div class="selection-refine hidden" data-selection-refine="${escapeHtml(format)}">
+        <small>已选中</small>
+        <blockquote data-selection-preview></blockquote>
+        <div class="button-row">
+          <button class="secondary" data-selection-cancel="${escapeHtml(format)}" type="button">取消</button>
+          <button class="primary" data-selection-apply="${escapeHtml(format)}" type="button">去对话助手修改</button>
+        </div>
       </div>
       ${history.length ? `
         <details class="material-history">
@@ -1467,6 +1545,7 @@ function renderTopicContent(data) {
   materialReady = Object.keys(generatedMaterials).length > 0;
   if (!contentBrief) contentBrief = buildBriefFromTopic(data.topic);
   updateContext();
+  setAgentResultContext("content-material");
   const topicFormats = data.topic.formats || [];
   const recommendedFormat = inferFormatFromPlanSlot(currentPlanSlot);
   // 默认始终提供 视频/小红书图文/朋友圈 三类，不再因 topic.formats 过滤隐藏；
@@ -1475,6 +1554,7 @@ function renderTopicContent(data) {
     || recommendedFormat === "community"
     || /社群|微信群/.test(String(currentPlanSlot?.platform || ""));
   const availableTypes = materialTypes
+    .filter((item) => !String(item.type).startsWith("campaign_"))
     .filter((item) => item.type !== "community" || showCommunity)
     .slice()
     .sort((a, b) => {
@@ -1573,8 +1653,8 @@ function rerenderContent() {
   if (currentContentData) renderTopicContent(currentContentData);
 }
 
-function renderTopicDesk(topic) {
-  contentBrief = buildBriefFromTopic(topic);
+function renderTopicDesk(topic, briefOverride = null) {
+  contentBrief = briefOverride || buildBriefFromTopic(topic);
   const data = buildTopicBrief(topic);
   renderTopicContent(data);
 }
@@ -2736,15 +2816,34 @@ function videoPartText(material, part) {
 }
 
 async function copyTextWithFeedback(text, button) {
-  try {
-    await navigator.clipboard.writeText(text);
+  const markCopied = () => {
     if (button) {
       const original = button.textContent;
       button.textContent = "已复制";
       setTimeout(() => { button.textContent = original; }, 1500);
     }
+  };
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error("clipboard_unavailable");
+    await navigator.clipboard.writeText(text);
+    markCopied();
   } catch {
-    showToast("复制失败，请手动选择文本复制", "error");
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    ta.style.top = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    if (ok) {
+      markCopied();
+      showToast("已复制");
+    } else {
+      showToast("复制失败，请手动选择文本复制", "error");
+    }
   }
 }
 
@@ -2903,15 +3002,17 @@ function activeResultData() {
 }
 
 async function generateDirections(opts = {}) {
-  const { brief = null, mode = null, eventInfo = null, focus = null, fromAgent = false, sourceSlotIndex = null, maxDirections = null, campaignLink = null, restore: externalRestore } = opts;
+  const { brief = null, mode = null, eventInfo = null, focus = null, fromAgent = false, sourceSlotIndex = null, maxDirections = null, campaignLink = null, restore: externalRestore, pipeline = null, slot = null } = opts;
   const restore = externalRestore
     || (els.topicsGenerateBtn ? setLoading(els.topicsGenerateBtn, "生成中") : () => {});
+  const useSlotPipeline = pipeline === "slot" || (slot && typeof slot === "object");
+  const slotTheme = useSlotPipeline ? String((slot && (slot.directionHint || slot.theme)) || (brief && brief.theme) || "").trim() : "";
   // 占位 session：让路由守卫(normalizeRoute)放行到「生成结果页」，否则首次生成时
   // directionSession 为空会被踢回选题库主页，加载动画就渲染进了隐藏的结果页。
-  directionSession = { directions: [], loading: true, sourceSlotIndex };
+  directionSession = { directions: [], loading: true, sourceSlotIndex, pipeline: useSlotPipeline ? "slot" : "default" };
   savedDirectionIds = new Set();
   navigate({ module: "topics", page: "generate", slotIndex: null });
-  renderDirectionLoading();
+  renderDirectionLoading({ fromSlot: useSlotPipeline, theme: slotTheme });
   try {
     profile = readProfileForm();
     const task = { ...readTask(), plan: currentPlan || undefined, excludeTitles: libraryTitles() };
@@ -2929,7 +3030,9 @@ async function generateDirections(opts = {}) {
     if (Number(maxDirections) > 0) task.maxDirections = Number(maxDirections);
     const payload = { profile, task };
     if (brief) payload.generationBrief = brief;
-    const data = await apiRequest("/api/topic-directions", payload);
+    if (useSlotPipeline && slot) payload.slot = slot;
+    const endpoint = useSlotPipeline ? "/api/topic-slot-directions" : "/api/topic-directions";
+    const data = await apiRequest(endpoint, payload);
     if (campaignLink && campaignLink.id && Array.isArray(data?.directions)) {
       data.campaignId = campaignLink.id;
       data.campaignTitle = campaignLink.title || "";
@@ -2937,6 +3040,9 @@ async function generateDirections(opts = {}) {
         d.campaignId = campaignLink.id;
         d.campaignTitle = campaignLink.title || "";
       }
+    }
+    if (useSlotPipeline && data && typeof data === "object" && !Array.isArray(data.directions)) {
+      data.pipeline = data.pipeline || "slot";
     }
     setDirectionSession(data, { origin: fromAgent ? "agent" : "panel", sourceSlotIndex });
     return data;
@@ -2959,14 +3065,27 @@ const PIPELINE_STEPS = [
   { id: "topics", label: "生成选题方向" },
 ];
 
-function renderDirectionLoading() {
+const SLOT_PIPELINE_STEPS = [
+  { id: "topics", label: "围绕主题直出具体选题" },
+];
+
+function renderDirectionLoading(opts = {}) {
   if (!els.topicsGenerateContent) return;
-  const steps = PIPELINE_STEPS.map((step) => `<li class="pipeline-step is-running">${escapeHtml(step.label)}</li>`).join("");
+  const fromSlot = Boolean(opts.fromSlot);
+  const theme = String(opts.theme || "").trim();
+  const stepSet = fromSlot ? SLOT_PIPELINE_STEPS : PIPELINE_STEPS;
+  const steps = stepSet.map((step) => `<li class="pipeline-step is-running">${escapeHtml(step.label)}</li>`).join("");
+  const title = fromSlot
+    ? `正在围绕「${theme || "本槽位主题"}」展开具体选题…`
+    : "正在按家长决策链生成选题…";
+  const sub = fromSlot
+    ? "槽位已确定主题与平台，AI 直出多条偏成稿的标题，挑选后保存到选题库或采用到这个排期格。"
+    : "洞察 → 角度 → 选题三步推理中，稍候片刻即可挑选保存或直接生产。";
   els.topicsGenerateContent.innerHTML = `
     <article class="empty-state direction-loading">
-      <h2>正在按家长决策链生成选题…</h2>
+      <h2>${escapeHtml(title)}</h2>
       <ol class="pipeline-progress">${steps}</ol>
-      <p>洞察 → 角度 → 选题三步推理中，稍候片刻即可挑选保存或直接生产。</p>
+      <p>${escapeHtml(sub)}</p>
     </article>
   `;
 }
@@ -3045,10 +3164,16 @@ function renderTopicGenerateStep(session) {
     return;
   }
   const refMeta = session.referenceMeta;
+  const isSlot = session.pipeline === "slot" || String(session.summary?.pipeline || "") === "slot";
+  const slotTheme = String(session.slotTheme || session.summary?.slotTheme || "").trim();
+  const headerTitle = isSlot && slotTheme
+    ? `围绕「${slotTheme}」的选题方向（${session.directions.length} 条）`
+    : `选题方向（${session.directions.length} 条）`;
   els.topicsGenerateContent.innerHTML = `
     <div class="page-header">
       <div>
-        <h2>选题方向（${session.directions.length} 条）</h2>
+        <h2>${escapeHtml(headerTitle)}</h2>
+        ${isSlot ? `<p class="page-subtitle">本批为槽位专用管道生成，紧扣主题直出具体标题，可挑选采用到这个排期格或保存到选题库。</p>` : ""}
       </div>
       ${renderDirectionAiMeta(session)}
     </div>
@@ -3134,11 +3259,7 @@ async function writeDirectionToSlot(direction) {
   if (!slot) return null;
   const prevId = slot.topicId;
   await saveDirections([direction]);
-  slot.topicId = direction.id;
-  slot.topicTitle = direction.title;
-  slot.topicAngle = direction.purpose;
-  if (direction.contentType) slot.contentType = direction.contentType;
-  if (Array.isArray(direction.materials)) slot.materialNeed = direction.materials;
+  applyTopicBriefToSlot(slot, direction);
   await persistPlan();
   // 清旧：替换了不同的旧选题、且没有别的排期格还在用它时，把旧选题归档（软删除，可在选题库恢复）。
   if (prevId && prevId !== direction.id) {
@@ -3307,7 +3428,7 @@ const resultRegistry = {
         viewLabel: "查看工作台",
         viewAction: "open-content-workbench",
         ops,
-        hint: "可说「生成短视频」「改短一点」「换个开头」「撤销」「定稿」。",
+        hint: "可说「生成短视频」「定稿」；修改文字请在主面板选中后局部替换。",
       });
     },
   },
@@ -3351,6 +3472,17 @@ function updateAgentContextLabel() {
   els.agentContextLabel.textContent = labels[activeView] || "和主工作区联动";
 }
 
+function ensureAgentCardForActiveContext() {
+  const type = agentSession?.activeResult?.type;
+  if (type !== "content-material" || !currentTopic) return;
+  const exists = agentSession.messages.some((m) => (
+    m.card?.type === "content-material"
+    && m.card?.data?.topic?.id
+    && m.card.data.topic.id === currentTopic.id
+  ));
+  if (!exists) emitAgentCard("content-material");
+}
+
 function openAgent() {
   agentSession.open = true;
   agentSession.pendingResult = false;
@@ -3360,6 +3492,7 @@ function openAgent() {
       skipRender: true,
     });
   }
+  ensureAgentCardForActiveContext();
   updateAgentContextLabel();
   updateAgentPanelMode();
   renderAgentMessages();
@@ -3573,7 +3706,7 @@ function agentFormatLabel(format) {
 }
 
 function contentEditHint() {
-  return "可以说「生成短视频」「改短一点」「换个开头」「撤销」或「定稿」。";
+  return "可以说「生成短视频」「定稿」；要局部修改时，先在主面板选中文字，再告诉我怎么改。";
 }
 
 async function resolveLibraryTopic(ref) {
@@ -3902,6 +4035,10 @@ function routeContentIntent(text) {
     } else {
       pushAgentMessage("assistant", "没有可撤销的历史版本。");
     }
+    return true;
+  }
+  if (fmt && activeSelectedMaterial(fmt)) {
+    agentRefineMaterial(fmt, text);
     return true;
   }
   if (/(改短|改长|短一点|长一点|精简|压缩|口语|正式|温和|开头|结尾|标题|钩子|换个?说法|换一种|加一?句|加个|删掉|去掉|润色|优化|改写|重写|改一下|改改|修改|调整|再软|再硬|更具体|具体一点|换标题)/.test(text)) {
@@ -4485,10 +4622,7 @@ function adoptTopicToSlot(topicId, slotIndex) {
   const schedule = currentPlan?.publishingSchedule || currentPlan?.week || [];
   const slot = schedule[slotIndex];
   if (!topic || !slot) return;
-  slot.topicId = topic.id;
-  slot.topicTitle = topic.title;
-  slot.topicAngle = topic.purpose;
-  if (Array.isArray(topic.materials)) slot.materialNeed = topic.materials;
+  applyTopicBriefToSlot(slot, topic);
   persistPlan();
   closeTopicModal();
   loadTopicLibrary();
@@ -4529,6 +4663,8 @@ async function generateTopicFromSlot(slotIndex, restore) {
     mode: isEvent ? "hybrid" : "balanced",
     sourceSlotIndex: slotIndex,
     maxDirections: 3,
+    pipeline: "slot",
+    slot,
     ...(restore ? { restore } : {}),
     ...(isEvent ? { eventInfo, focus: slot.directionHint || slot.theme } : {}),
   });
@@ -4561,6 +4697,15 @@ async function startContentFromPlanSlot(slotIndex) {
             theme: slot.theme,
             topicTitle: slot.topicTitle,
             topicAngle: slot.topicAngle,
+            topicBrief: slot.topicBrief,
+            topicKeyPoints: slot.topicKeyPoints,
+            topicCta: slot.topicCta,
+            topicParentQuestion: slot.topicParentQuestion,
+            topicContentGoal: slot.topicContentGoal,
+            topicRisk: slot.topicRisk,
+            topicStructure: slot.topicStructure,
+            topicMaterials: slot.topicMaterials,
+            topicPurpose: slot.topicPurpose,
             whyPlatform: slot.whyPlatform,
             whyTiming: slot.whyTiming,
             materialNeed: slot.materialNeed,
@@ -4581,10 +4726,11 @@ async function startContentFromPlanSlot(slotIndex) {
 
     if (!topic) throw new Error("topic_missing");
     currentTopic = topic;
+    contentBrief = buildBriefFromSlot(slot, topic);
     topicsReady = true;
     updateContext();
     setView("content");
-    renderTopicDesk(topic);
+    renderTopicDesk(topic, contentBrief);
   } catch (error) {
     if (error?.message === "topic_missing" || /not.?found|不存在|未找到|404/i.test(String(error?.message || ""))) {
       showToast("该选题可能已被删除或归档，请在这个排期格点「重新生成选题」", "error");
@@ -4895,7 +5041,7 @@ async function openContentForDirection(id, format) {
       if (slot) {
         currentPlanSlot = slot;
         currentPlanSlotIndex = sourceSlotIndex;
-        renderTopicDesk(direction);
+        renderTopicDesk(direction, buildBriefFromSlot(slot, direction));
       }
       return;
     } catch (error) {
@@ -4985,49 +5131,211 @@ async function applyMaterialRefine(format, instruction) {
   return material;
 }
 
+function materialEditable(format) {
+  return els.contentView?.querySelector(`[data-material-editable="${CSS.escape(format)}"]`) || null;
+}
+
+function syncEditedMaterialFromDom(format) {
+  const entry = generatedMaterials[format];
+  const editable = materialEditable(format);
+  if (!entry || !editable) return "";
+  const text = editable.innerText.trim();
+  generatedMaterials[format] = { ...entry, editedText: text, status: "draft" };
+  return text;
+}
+
+function selectionPanel(format) {
+  return els.contentView?.querySelector(`[data-selection-refine="${CSS.escape(format)}"]`) || null;
+}
+
+function activeSelectedMaterial(format = null) {
+  const active = agentSession.selectedMaterial;
+  if (!active?.selectedText) return null;
+  if (format && active.format !== format) return null;
+  return active;
+}
+
+function textOffsetWithin(root, container, offset) {
+  let total = 0;
+  const walker = document.createTreeWalker(root, 4);
+  let node = walker.nextNode();
+  while (node) {
+    if (node === container) return total + offset;
+    total += node.textContent.length;
+    node = walker.nextNode();
+  }
+  return -1;
+}
+
+function selectionOffsets(editable, range) {
+  const start = textOffsetWithin(editable, range.startContainer, range.startOffset);
+  const end = textOffsetWithin(editable, range.endContainer, range.endOffset);
+  if (start < 0 || end < 0 || end <= start) return null;
+  return { start, end };
+}
+
+function focusAgentForSelectedText(format) {
+  const panel = selectionPanel(format);
+  const active = activeSelectedMaterial(format);
+  const selectedText = panel?.dataset.selectedText || active?.selectedText || "";
+  if (!selectedText) {
+    showToast("请先在正文里选中要修改的文字", "error");
+    return;
+  }
+  agentSession.activeFormat = format;
+  agentSession.selectedMaterial = { format, selectedText, start: active?.start ?? null, end: active?.end ?? null };
+  setAgentResultContext("content-material");
+  openAgent();
+  if (els.agentInput) {
+    els.agentInput.placeholder = "告诉我这段怎么改，比如：更口语一点、缩短、换个更像家长的话";
+    els.agentInput.focus();
+  }
+  pushAgentMessage("assistant", `已选中「${selectedText.length > 28 ? `${selectedText.slice(0, 28)}…` : selectedText}」。你直接说修改要求，我只改这段并替换回正文。`);
+}
+
+function captureMaterialSelection(format) {
+  const editable = materialEditable(format);
+  const panel = selectionPanel(format);
+  if (!editable || !panel) return;
+  const selection = window.getSelection();
+  const selectedText = String(selection?.toString() || "").trim();
+  if (!selectedText || !selection.rangeCount) return;
+  const range = selection.getRangeAt(0);
+  if (!editable.contains(range.commonAncestorContainer)) return;
+  const offsets = selectionOffsets(editable, range);
+  panel.classList.remove("hidden");
+  panel.dataset.selectedText = selectedText;
+  if (offsets) {
+    panel.dataset.selectionStart = String(offsets.start);
+    panel.dataset.selectionEnd = String(offsets.end);
+  }
+  agentSession.activeFormat = format;
+  agentSession.selectedMaterial = { format, selectedText, start: offsets?.start ?? null, end: offsets?.end ?? null };
+  setAgentResultContext("content-material");
+  const preview = panel.querySelector("[data-selection-preview]");
+  if (preview) preview.textContent = selectedText;
+}
+
+function hideSelectionPanel(format) {
+  const panel = selectionPanel(format);
+  if (!panel) return;
+  panel.classList.add("hidden");
+  panel.dataset.selectedText = "";
+  panel.dataset.selectionStart = "";
+  panel.dataset.selectionEnd = "";
+  if (agentSession.selectedMaterial?.format === format) agentSession.selectedMaterial = null;
+}
+
+function applySelectedTextReplacement(format, replacement, options = {}) {
+  const entry = generatedMaterials[format];
+  const editable = materialEditable(format);
+  const panel = selectionPanel(format);
+  if (!entry || !editable || !panel) return;
+  const selectedText = panel.dataset.selectedText || activeSelectedMaterial(format)?.selectedText || "";
+  const nextText = String(replacement || "").trim();
+  if (!selectedText) {
+    showToast("先在正文里选中要修改的文字", "error");
+    return;
+  }
+  if (!nextText) {
+    showToast("AI 没有返回可替换文本", "error");
+    return;
+  }
+  const currentText = editable.innerText;
+  const active = activeSelectedMaterial(format);
+  const start = Number(active?.start ?? panel.dataset.selectionStart);
+  const end = Number(active?.end ?? panel.dataset.selectionEnd);
+  const canUseOffsets = Number.isFinite(start) && Number.isFinite(end) && end > start && currentText.slice(start, end).trim() === selectedText;
+  if (!canUseOffsets && !currentText.includes(selectedText)) {
+    showToast("选中的文字已变化，请重新选择", "error");
+    hideSelectionPanel(format);
+    return;
+  }
+  const history = [
+    ...(entry.history || []),
+    { material: entry.material, editedText: entry.editedText || currentText.trim(), aiMeta: entry.aiMeta, label: "局部修改前" },
+  ];
+  const updated = canUseOffsets
+    ? `${currentText.slice(0, start)}${nextText}${currentText.slice(end)}`
+    : currentText.replace(selectedText, nextText);
+  editable.innerText = updated;
+  generatedMaterials[format] = { ...entry, editedText: updated.trim(), history, status: "draft" };
+  hideSelectionPanel(format);
+  setAgentResultContext("content-material");
+  syncLatestCardSnapshot();
+  if (!options.silent) showToast("已替换选中文字");
+}
+
 async function refineMaterial(format) {
   const entry = generatedMaterials[format];
   if (!entry || !currentTopic) return;
-  const input = els.contentView.querySelector(`.material-refine-input[data-format="${CSS.escape(format)}"]`);
-  const instruction = input ? input.value.trim() : "";
-  if (!instruction) {
-    input?.focus();
+  const selectedText = selectionPanel(format)?.dataset.selectedText || activeSelectedMaterial(format)?.selectedText || "";
+  if (!selectedText) {
+    showToast("请先在正文里选中要修改的文字", "error");
     return;
   }
-  const button = els.contentView.querySelector(`.material-refine-apply[data-format="${CSS.escape(format)}"]`);
-  const restore = button ? setLoading(button, "微调中") : () => {};
-  try {
-    await applyMaterialRefine(format, instruction);
-    showToast(`${materialTypeMeta(format).label}已微调`);
-  } catch (error) {
-    showToast(error.message || "微调失败", "error");
-  } finally {
-    restore();
-  }
+  focusAgentForSelectedText(format);
 }
 
 async function agentRefineMaterial(format, instruction) {
   if (!format) { pushAgentMessage("assistant", "先生成一版内容（比如说「生成小红书」），我再帮你改。"); return; }
   if (!generatedMaterials[format]) { pushAgentMessage("assistant", `还没有生成${agentFormatLabel(format)}，先说「生成${agentFormatLabel(format)}」。`); return; }
+  const selected = activeSelectedMaterial(format);
+  if (!selected?.selectedText) {
+    setView("content");
+    pushAgentMessage("assistant", "可以。先在主面板正文里选中要改的那段文字，然后在这里告诉我怎么改，我只替换选中的部分。");
+    return;
+  }
+  await applyAiSelectedTextRefine(format, instruction);
+}
+
+async function applyAiSelectedTextRefine(format, instruction) {
+  const entry = generatedMaterials[format];
+  const selected = activeSelectedMaterial(format);
+  if (!entry || !currentTopic || !selected?.selectedText) return;
+  syncEditedMaterialFromDom(format);
+  const currentText = entryText(generatedMaterials[format]);
   agentSession.busy = true;
   renderAgentMessages();
   try {
-    await applyMaterialRefine(format, instruction);
+    profile = readProfileForm();
+    const data = await apiRequest("/api/topic-content/selection-refine", {
+      profile,
+      task: {
+        ...readTask(),
+        topicId: currentTopic.id,
+        topic: currentTopic,
+        planSlot: currentPlanSlot || undefined,
+        brief: briefPayload(),
+        format,
+        currentText,
+        selectedText: selected.selectedText,
+        instruction,
+      },
+    });
     agentSession.busy = false;
-    pushAgentMessage("assistant", `已按要求改写${agentFormatLabel(format)}，详细结果看主面板。`);
+    const replacement = String(data.replacement || "").trim();
+    if (!replacement) throw new Error("AI 没有返回可替换文本");
+    if (data.aiMeta && data.aiMeta.source !== "ai") {
+      throw new Error(data.aiMeta.error || data.aiMeta.reason || "局部修改未生效，请检查 AI 配置后重试。");
+    }
+    applySelectedTextReplacement(format, replacement, { silent: true });
+    pushAgentMessage("assistant", "已按你的要求修改选中部分，并替换回主面板正文。");
   } catch (error) {
     agentSession.busy = false;
-    pushAgentMessage("assistant", `改写失败：${error.message}`);
+    pushAgentMessage("assistant", `局部修改失败：${error.message}`);
   }
 }
 
 async function finalizeMaterial(format) {
   const entry = generatedMaterials[format];
   if (!entry || !currentTopic) return;
+  syncEditedMaterialFromDom(format);
   if (!currentTopic.id) currentTopic.id = `topic-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const latestEntry = generatedMaterials[format] || entry;
   const prevStatus = entry.status;
   const nextStatus = entry.status === "final" ? "draft" : "final";
-  generatedMaterials[format] = { ...entry, status: nextStatus };
+  generatedMaterials[format] = { ...latestEntry, status: nextStatus };
   rerenderContent();
   try {
     const hasPlanSlot = currentPlanId && currentPlanSlot && Number.isInteger(Number(currentPlanSlotIndex));
@@ -5042,7 +5350,7 @@ async function finalizeMaterial(format) {
         format,
         contentType: currentTopic.contentType || "",
         category: currentTopic.category || "",
-        material: entry.material,
+        material: materialForPersist(generatedMaterials[format] || latestEntry),
         brief: briefPayload() || contentBrief || null,
         planId: currentPlanId || "",
         planTitle: currentPlan?.overview?.title || "",
@@ -5075,8 +5383,8 @@ function rollbackMaterial(format, index) {
   if (!target) return;
   const history = entry.history.slice();
   history.splice(index, 1);
-  history.push({ material: entry.material, aiMeta: entry.aiMeta, label: "回滚前" });
-  generatedMaterials[format] = { ...entry, material: target.material, aiMeta: target.aiMeta, history, status: "draft" };
+  history.push({ material: entry.material, editedText: entry.editedText, aiMeta: entry.aiMeta, label: "回滚前" });
+  generatedMaterials[format] = { ...entry, material: target.material, editedText: target.editedText, aiMeta: target.aiMeta, history, status: "draft" };
   rerenderContent();
 }
 
@@ -5090,18 +5398,10 @@ async function copyVideoPart(format, part, button) {
 async function copyMaterial(format) {
   const entry = generatedMaterials[format];
   if (!entry) return;
-  const text = materialToText(entry.material);
+  syncEditedMaterialFromDom(format);
+  const text = entryText(generatedMaterials[format]);
   const button = els.contentView.querySelector(`.material-copy[data-format="${CSS.escape(format)}"]`);
-  try {
-    await navigator.clipboard.writeText(text);
-    if (button) {
-      const original = button.textContent;
-      button.textContent = "已复制";
-      setTimeout(() => { button.textContent = original; }, 1500);
-    }
-  } catch {
-    showToast("复制失败，请手动选择文本复制", "error");
-  }
+  await copyTextWithFeedback(text, button);
 }
 
 async function generateCommunityPlan(groupType) {
@@ -5294,6 +5594,14 @@ els.topicsView.addEventListener("change", (event) => {
 });
 
 els.contentView.addEventListener("click", (event) => {
+  const selectionApply = event.target.closest("[data-selection-apply]");
+  if (selectionApply) {
+    const format = selectionApply.dataset.selectionApply;
+    focusAgentForSelectedText(format);
+    return;
+  }
+  const selectionCancel = event.target.closest("[data-selection-cancel]");
+  if (selectionCancel) { hideSelectionPanel(selectionCancel.dataset.selectionCancel); return; }
   const generate = event.target.closest(".material-generate");
   if (generate) { generateMaterial(generate.dataset.format); return; }
   const refine = event.target.closest(".material-refine-apply");
@@ -5314,12 +5622,17 @@ els.contentView.addEventListener("click", (event) => {
   if (contentReset) { resetContentToStart(); return; }
 });
 
-els.contentView.addEventListener("keydown", (event) => {
-  if (event.key !== "Enter") return;
-  const input = event.target.closest(".material-refine-input");
-  if (!input) return;
-  event.preventDefault();
-  refineMaterial(input.dataset.format);
+els.contentView.addEventListener("mouseup", (event) => {
+  const editable = event.target.closest("[data-material-editable]");
+  if (!editable) return;
+  captureMaterialSelection(editable.dataset.materialEditable);
+});
+
+els.contentView.addEventListener("input", (event) => {
+  const editable = event.target.closest("[data-material-editable]");
+  if (!editable) return;
+  syncEditedMaterialFromDom(editable.dataset.materialEditable);
+  setAgentResultContext("content-material");
 });
 
 els.campaignView?.addEventListener("click", (event) => {

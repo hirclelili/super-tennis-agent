@@ -1723,18 +1723,22 @@ function inferFormatsFromLabel(platformLabel = "", formatLabel = "") {
 function topicFromScheduleSlot(slot, profile, task = {}) {
   const seed = slot.topicId ? topicBank.find((topic) => topic.id === slot.topicId) : null;
   const base = seed ? { ...seed } : {};
+  const brief = slot.topicBrief && typeof slot.topicBrief === "object" ? slot.topicBrief : {};
   return normalizeTopicRaw({
     ...base,
     id: slot.topicId || makeTopicId("plan", slot.topicTitle),
-    title: slot.topicTitle || base.title || "排期选题",
+    title: slot.topicTitle || brief.title || base.title || "排期选题",
     goal: slot.goal || base.goal || inferPrimaryGoal(task),
-    purpose: slot.topicAngle || slot.reason || base.purpose || "完成本周排期内容",
-    materials: slot.materialNeed || base.materials || ["场地空镜"],
-    structure: slot.structure || base.structure || ["开场", "说明要点", "行动引导"],
-    cta: slot.action || base.cta,
-    risk: slot.risk || base.risk || "未确认的信息不要写死",
+    purpose: slot.topicAngle || brief.topicAngle || slot.reason || base.purpose || "完成本周排期内容",
+    parentQuestion: slot.topicParentQuestion || brief.parentQuestion || base.parentQuestion || "",
+    contentGoal: slot.topicContentGoal || brief.contentGoal || base.contentGoal || "",
+    materials: slot.topicMaterials || slot.materialNeed || brief.materials || base.materials || ["场地空镜"],
+    structure: slot.topicStructure || slot.topicKeyPoints || brief.keyPoints || slot.structure || base.structure || ["开场", "说明要点", "行动引导"],
+    cta: slot.topicCta || brief.cta || slot.action || base.cta,
+    risk: slot.topicRisk || brief.risk || slot.risk || base.risk || "未确认的信息不要写死",
     platforms: inferPlatformsFromLabel(slot.platform),
     formats: inferFormatsFromLabel(slot.platform, slot.format),
+    contentType: slot.contentType || brief.contentType || base.contentType || "",
     source: "plan",
   }, profile, task);
 }
@@ -3757,6 +3761,250 @@ async function buildTopicDirectionsWithAi(profile, task = {}) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// 一周计划槽位的选题生成管道（Slot Pipeline）
+// ---------------------------------------------------------------------------
+// 与主入口 buildTopicDirectionsWithAi 的区别：
+//   1. 跳过 insight + angles：槽位已具体到主题，不必再展开决策链；
+//   2. 直接基于 brief.theme + slot 字段生成 N 条具体标题（偏成稿、像选题）；
+//   3. 跳过 critic：槽位路径少而精，一次成型。
+// 输出仍走相同的 direction schema，前端可直接用。
+function slotTopicsMessages(profile, task, brief, framework, stagePolicy, lockContentType, want = 3) {
+  const showcaseLabels = showcaseLabelsFor(stagePolicy);
+  const lockLabel = lockContentType ? lockContentTypeLabel(lockContentType, stagePolicy) : "";
+  return [
+    {
+      role: "system",
+      content: [
+        "你是少儿网球内容的选题成稿顾问（Slot Topics 角色）。",
+        "你拿到的是一周计划里某一个具体排期槽位：主题方向、平台/格式/目标都已确定。",
+        "任务：基于给定主题直接写出「像成稿一样具体」的标题方向，【不要】再展开洞察/角度/通用矩阵，【不要】再发散到无关主题。",
+        "每条标题要让人看完就能判断「这就是这一格要做的选题」，像运营组当天敲定的选题清单。",
+        "explainer 写成讲解/价值稿；真实展示类（class_record/student_growth/venue_env/faculty_course/behind_scene）要写成「拍什么真实画面」，不要写成讲解稿。",
+        "标题面向家长，具体、不标题党、不夸张；遵守 contentRules 与 profile.avoid。",
+        "输出必须是严格 JSON，不要 Markdown，不要解释。",
+      ].join("\n"),
+    },
+    {
+      role: "user",
+      content: JSON.stringify({
+        taskType: "junior_slot_topic_directions",
+        venueProfile: profileForPrompt(profile),
+        slotContext: {
+          theme: brief?.theme || "",
+          primaryGoal: brief?.primaryGoal || "",
+          contentType: brief?.contentType || "",
+          mustCover: brief?.mustCover || [],
+          preferredPlatforms: brief?.preferredPlatforms || [],
+          day: task?.slot?.day || "",
+          platform: task?.slot?.platform || "",
+          format: task?.slot?.format || "",
+          directionHint: task?.slot?.directionHint || "",
+          topicTitle: task?.slot?.topicTitle || "",
+          topicAngle: task?.slot?.topicAngle || "",
+        },
+        availableShowcase: showcaseLabels,
+        contentRules: framework.contentRules || {},
+        requiredShape: {
+          directions: [{
+            id: "string，slot_ai_ 前缀",
+            contentType: "string，explainer 或真实展示类 id",
+            chainId: "string",
+            contentGoal: "认知|比较|价值|信任|行动|活动",
+            parentQuestion: "string",
+            reason: "string，为什么现在做（1 句，扣回槽位）",
+            title: "string（具体到像成稿标题，不要发散）",
+            purpose: "string，家长在纠结什么 + 这条解决什么",
+            goal: "opening|booking|junior|adult_beginner|community|event|trust|daily",
+            audiences: ["parents"],
+            platforms: ["xhs"],
+            formats: ["xhs_image"],
+            structure: ["string"],
+            materials: ["string"],
+            cta: "string",
+            risk: "string",
+          }],
+        },
+        constraints: [
+          lockContentType ? `【硬锁】本批所有 directions 的 contentType 必须 = ${lockContentType}（${lockLabel}），禁止出现任何其它 contentType。` : null,
+          `directions 数量 ${want}，每条都必须紧扣「主题：${brief?.theme || ""}」，不能偏题。`,
+          "【关键】这是槽位专用管道，跳过洞察与角度矩阵；不要再产出 insight / angles / 决策问题。",
+          "【关键】标题要更具体、更像成稿（接近最终标题），不要再写「关于 XX / XX 解析 / XX 指南」这种宽泛的方向词；要有角度、有场景、有钩子。",
+          "【关键】reason 必须扣回槽位（为什么这一格要做这个），而不是通用原因。",
+          "真实展示类的 structure 用拍摄式（开场镜头 → 真实片段/细节 → 不夸大的边界 → 体验入口），materials 写真实可拍画面；不要写成口播讲解。",
+          "audiences 只用 parents、teens；禁止 adults/players/corporate。",
+          "platforms 优先使用 slot.preferredPlatforms；formats 与平台一致即可。",
+          "goal 优先 junior；活动类可用 event；信任类可用 trust。",
+          "禁止照搬槽位 hint 原文当标题，要本地化成更口语的家长标题。",
+        ].filter(Boolean),
+        outputNote: "只返回 JSON。",
+      }),
+    },
+  ];
+}
+
+function directionsFromSlotFallback(profile, normalizedTask, brief, stagePolicy, lockContentType, want = 3) {
+  const theme = String(brief?.theme || "未指定主题").trim();
+  const preferredPlatforms = Array.isArray(brief?.preferredPlatforms) && brief.preferredPlatforms.length
+    ? brief.preferredPlatforms
+    : ["xhs"];
+  const lock = lockContentType || "explainer";
+  const isExplainer = lock === "explainer";
+  const isShowcase = ["class_record", "student_growth", "venue_env", "faculty_course", "behind_scene"].includes(lock);
+  // 三条本地 fallback 也要角度不同、标题不同，避免模板感。
+  const angleLibrary = [
+    {
+      suffix: "家长最常问的 3 件事",
+      reason: "本格先用家长最常问的 3 件事回应主题，让标题一眼就回答「我点开能看到什么」。",
+      purpose: "把家长最关心的子问题挑出来，挨个讲清楚，让标题自带「清单」价值。",
+      contentGoal: "认知",
+      parentQuestion: `关于「${theme}」，家长最先会问什么`,
+      structure: isExplainer
+        ? [`家长最常问的 3 件事：${theme}`, "教练视角怎么拆解", "家长可以怎么观察/核实", "体验入口"]
+        : ["开场镜头（家长视角）", "训练现场对应画面", "不夸大的边界", "体验/咨询入口"],
+      materials: ["教练讲解片段", "训练现场画面", "家长观察小贴士"],
+      cta: "留言孩子的年龄/学龄段，教练给具体建议",
+    },
+    {
+      suffix: "训练里到底练什么",
+      reason: "本条紧扣槽位主题，把训练里能真实练到的内容拍出来，落地「训练现场证据」。",
+      purpose: "让家长看到本主题对应训练里真实可拍的内容，建立「训练到底在练什么」的认知。",
+      contentGoal: "信任",
+      parentQuestion: `学「${theme}」这件事，孩子到底练到什么`,
+      structure: isExplainer
+        ? [`家长疑问：${theme}`, "训练里练到的具体动作", "不夸大的边界（多久/什么程度）", "体验入口"]
+        : ["开场：训练环境", "真实训练片段", "教练纠正细节", "体验入口"],
+      materials: ["学员训练片段", "教练纠正细节", "训练道具/球拍特写"],
+      cta: "预约一次体验课，亲自看训练过程",
+    },
+    {
+      suffix: "最容易踩的 1 个坑",
+      reason: "本条从槽位主题里挑一个最容易踩的坑做纠偏，标题自带「别再 XX」提醒。",
+      purpose: "纠偏一个与主题强相关的常见误区，帮家长避免无效投入，提升标题吸引力。",
+      contentGoal: "认知",
+      parentQuestion: `关于「${theme}」，家长最容易踩的坑是什么`,
+      structure: isExplainer
+        ? [`常见误区：${theme}`, "为什么这么坑", "正确的观察/做法", "体验入口"]
+        : ["开场：误区演示", "正确示范对比", "边界说明", "体验入口"],
+      materials: ["误区演示对比", "正确示范", "教练解释字幕"],
+      cta: "如果你也在纠结这条，可以先来体验一次再决定",
+    },
+  ];
+  const raw = angleLibrary.slice(0, want).map((angle, index) => {
+    const platforms = preferredPlatforms;
+    const formats = platforms.includes("douyin") || platforms.includes("video")
+      ? ["video"]
+      : (platforms.includes("moments") ? ["moments_text", "moments_image"] : ["xhs_image"]);
+    return {
+      id: makeTopicId("slot_local", `${theme}-${angle.suffix}`),
+      chainId: "slot_local",
+      contentType: lock,
+      contentGoal: angle.contentGoal,
+      parentQuestion: angle.parentQuestion,
+      reason: angle.reason,
+      title: `${theme}｜${angle.suffix}`,
+      purpose: angle.purpose,
+      goal: isExplainer ? "junior" : (isShowcase ? "trust" : "junior"),
+      audiences: ["parents"],
+      platforms,
+      formats,
+      structure: angle.structure,
+      materials: angle.materials,
+      cta: angle.cta,
+      risk: "不承诺效果/升学，不编造案例",
+      source: "ai",
+    };
+  });
+  return decorateDirectionList(raw, profile, normalizedTask);
+}
+
+async function buildSlotDirectionsWithAi(profile, task = {}) {
+  const framework = await loadAngleFramework();
+  const brief = normalizeBrief(task.generationBrief);
+  const mode = resolveGenerationMode(task, brief);
+  const stagePolicy = resolveStagePolicy(profile, framework);
+  const lockContentType = resolveLockContentType(brief?.contentType, stagePolicy);
+  const want = Number(task.maxDirections) > 0 ? Math.max(1, Math.floor(Number(task.maxDirections))) : 3;
+  const allowedAudienceIds = allowedAudiencesForProfile(profile);
+  const goal = inferPrimaryGoal(task);
+  const operatingMode = inferOperatingMode(profile, { ...task, goal });
+  const pillars = buildPillars(profile, { ...task, goal, mode: operatingMode });
+  const normalizedTask = { ...task, goal, mode: operatingMode, pillars: pillars.map((pillar) => pillar.id) };
+
+  const settings = await loadAiSettings();
+  const resolved = resolveAiProvider(settings);
+  let aiMeta = buildLocalAiMeta(settings);
+  let directions = [];
+  const steps = [];
+
+  if (resolved) {
+    const { provider, config } = resolved;
+    const providerLabel = providerDefaults[provider]?.label || provider;
+    try {
+      const topicText = await callAiText(
+        provider,
+        config,
+        slotTopicsMessages(profile, normalizedTask, brief, framework, stagePolicy, lockContentType, want)
+      );
+      const topicData = extractJson(topicText);
+      if (!topicData || !Array.isArray(topicData.directions) || !topicData.directions.length) {
+        throw new Error("AI 返回选题结构不完整");
+      }
+      directions = decorateDirectionList(topicData.directions, profile, normalizedTask);
+      steps.push("topics");
+      aiMeta = { source: "ai", provider: providerLabel, model: config.model, steps };
+    } catch (error) {
+      aiMeta = {
+        source: "fallback",
+        provider: providerLabel,
+        model: config?.model || "",
+        steps,
+        error: error.message || "AI 生成失败，已回退本地规则",
+      };
+    }
+  }
+
+  if (!directions.length) {
+    directions = directionsFromSlotFallback(profile, normalizedTask, brief, stagePolicy, lockContentType, want);
+  }
+
+  // 硬锁兜底：保证最终方向都落在槽位指定类型
+  if (lockContentType) {
+    let onType = directions.filter((d) => String(d.contentType || "") === lockContentType);
+    if (!onType.length) {
+      onType = directionsFromSlotFallback(profile, normalizedTask, brief, stagePolicy, lockContentType, want)
+        .filter((d) => String(d.contentType || "") === lockContentType);
+    }
+    if (onType.length) directions = onType;
+  }
+
+  if (want && directions.length > want) directions = directions.slice(0, want);
+
+  const themeText = String(brief?.theme || "本槽位主题").trim();
+  const summary = {
+    mode: operatingModeLabels[operatingMode] || operatingMode,
+    goal: goalLabels[goal] || goal,
+    generationMode: mode,
+    audience: allowedAudienceIds.map((id) => audienceLabels[id] || id).join(" / ") || "少儿家长",
+    stage: stageLabels[profile.stage] || profile.stage,
+    pipeline: "slot",
+    suggestion: `围绕「${themeText}」生成了 ${directions.length} 条具体选题，直接挑选采用或保存到选题库。`,
+    count: directions.length,
+  };
+
+  return {
+    sessionId: `slot_dir_${Date.now().toString(36)}`,
+    generatedAt: new Date().toISOString(),
+    generationMode: mode,
+    pipeline: "slot",
+    slotTheme: themeText,
+    summary,
+    pillars,
+    directions,
+    aiMeta,
+  };
+}
+
 function referenceParseMessages(profile, task, reference, framework = {}, allowedAudienceIds = []) {
   const allowedLabels = allowedAudienceIds.map((id) => audienceLabels[id] || id);
   const isJunior = allowedAudienceIds.length > 0 && allowedAudienceIds.every((id) => id === "parents" || id === "teens");
@@ -4928,6 +5176,53 @@ function contentRefineMessages(profile, task, topic, format, currentMaterial, in
   ];
 }
 
+function selectionRefineMessages(profile, task, topic, format) {
+  const brief = buildContentBrief(profile, topic, task);
+  const selectedText = String(task.selectedText || "").slice(0, 1200);
+  const currentText = String(task.currentText || "").slice(0, 8000);
+  const instruction = String(task.instruction || "").slice(0, 500);
+  return [
+    {
+      role: "system",
+      content: [
+        "你是网球场内容运营写手，正在对一篇已生成内容中的选中文字做局部改写。",
+        "你只能改写 selectedText 这一段，并返回可直接替换 selectedText 的文本。",
+        "不要返回整篇文章，不要解释，不要 Markdown，不要 JSON 以外的内容。",
+        "保留原文事实和语气边界；不编造价格、时间、学员案例、爆满现场、效果承诺或升学暗示。",
+        "输出必须是严格 JSON，格式为 {\"replacement\":\"...\"}。",
+      ].join("\n"),
+    },
+    {
+      role: "user",
+      content: JSON.stringify({
+        taskType: "topic_content_selection_refine",
+        venueProfile: {
+          name: profile.name,
+          shortName: profile.shortName,
+          city: profile.city,
+          stage: stageLabels[profile.stage] || profile.stage,
+          positioning: profile.positioning,
+          tone: profile.tone,
+          avoid: profile.avoid,
+        },
+        brief,
+        contentRequest: {
+          format,
+          formatLabel: formatSpecFor(format, brief).formatLabel,
+        },
+        instruction,
+        selectedText,
+        surroundingContent: currentText,
+        constraints: [
+          "replacement 必须能直接放回原位置，前后语义自然衔接。",
+          "如果用户要求变短，就明显压缩；如果要求更口语，就像真实运营者会说的话。",
+          "不要改写 selectedText 之外的内容，不要新增无依据事实。",
+        ],
+      }),
+    },
+  ];
+}
+
 function normalizeMaterial(raw, format, fallback) {
   const formatType = format === "moments_image" ? "moments_text" : format;
   const input = raw?.material || raw || {};
@@ -5141,6 +5436,49 @@ async function buildContentRefineWithAi(profile, task = {}) {
         model: config?.model || "",
         format,
         error: error.message || "定向修订失败，已保留原物料",
+      },
+    };
+  }
+}
+
+async function buildSelectionRefineWithAi(profile, task = {}) {
+  const fallbackPack = buildTopicContent(profile, task);
+  const format = task.format || (task.formats?.length ? task.formats[0] : "");
+  const selectedText = String(task.selectedText || "").trim();
+  const instruction = String(task.instruction || "").trim();
+
+  if (!format) return { replacement: selectedText, aiMeta: { source: "fallback", error: "缺少内容类型 format" } };
+  if (!selectedText || !instruction) {
+    return { replacement: selectedText, aiMeta: { source: "fallback", format, error: "缺少选中文字或修改要求" } };
+  }
+
+  const settings = await loadAiSettings();
+  const resolved = resolveAiProvider(settings);
+  if (!resolved) {
+    return { replacement: selectedText, aiMeta: { source: "local", reason: "未配置可用的 AI，无法局部修改", format } };
+  }
+
+  const { provider, config } = resolved;
+  const providerLabel = providerDefaults[provider]?.label || provider;
+
+  try {
+    const text = await callAiText(provider, config, selectionRefineMessages(profile, task, fallbackPack.topic, format));
+    const data = extractJson(text);
+    const replacement = String(data.replacement || "").trim();
+    if (!replacement) throw new Error("AI 返回的 replacement 为空");
+    return {
+      replacement,
+      aiMeta: { source: "ai", provider: providerLabel, model: config.model, format },
+    };
+  } catch (error) {
+    return {
+      replacement: selectedText,
+      aiMeta: {
+        source: "fallback",
+        provider: providerLabel,
+        model: config?.model || "",
+        format,
+        error: error.message || "局部修改失败，已保留原文",
       },
     };
   }
@@ -5760,7 +6098,7 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, {
         ok: true,
         version: "0.2.0",
-        features: ["operation-plan", "topic-library", "topic-directions", "topic-reference", "topic-content", "community-plan", "agent-topic-brief", "agent-direction-refine", "agent-route", "agent-plan-slot-refine"],
+        features: ["operation-plan", "topic-library", "topic-directions", "topic-reference", "topic-content", "topic-content-selection-refine", "community-plan", "agent-topic-brief", "agent-direction-refine", "agent-route", "agent-plan-slot-refine"],
       });
       return;
     }
@@ -5860,6 +6198,14 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "POST" && pathname === "/api/topic-slot-directions") {
+      const body = await readJson(req);
+      const profile = body.profile || await loadProfile();
+      const task = { ...(body.task || {}), generationBrief: body.generationBrief || body.task?.generationBrief, slot: body.slot || body.task?.slot || {} };
+      sendJson(res, 200, await buildSlotDirectionsWithAi(profile, task));
+      return;
+    }
+
     if (req.method === "POST" && pathname === "/api/agent/topic-brief") {
       const body = await readJson(req);
       const profile = body.profile || await loadProfile();
@@ -5917,6 +6263,14 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const profile = body.profile || await loadProfile();
       const result = await buildContentRefineWithAi(profile, body.task || {});
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/topic-content/selection-refine") {
+      const body = await readJson(req);
+      const profile = body.profile || await loadProfile();
+      const result = await buildSelectionRefineWithAi(profile, body.task || {});
       sendJson(res, 200, result);
       return;
     }
