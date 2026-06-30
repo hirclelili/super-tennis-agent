@@ -17,6 +17,7 @@ data/weekly-plan.json
 data/weekly-plans.json
 data/community-plans.json
 data/campaign-plans.json
+data/agent-memory.local.json
 
 # 旧版视频生成器：与新版本无依赖关系，避免误提交
 legacy-video-creator/

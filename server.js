@@ -52,6 +52,7 @@ const weeklyPlanPath = path.join(__dirname, "data", "weekly-plan.json");
 const weeklyPlansPath = path.join(__dirname, "data", "weekly-plans.json");
 const communityPlansPath = path.join(__dirname, "data", "community-plans.json");
 const campaignPlansPath = path.join(__dirname, "data", "campaign-plans.json");
+const agentMemoryPath = path.join(__dirname, "data", "agent-memory.local.json");
 const angleFrameworkPath = path.join(__dirname, "data", "junior-topic-angle-framework.json");
 
 const providerDefaults = {
@@ -330,6 +331,84 @@ async function loadProfile() {
 
 async function saveProfile(profile) {
   await atomicWriteJson(profilePath, profile);
+}
+
+function defaultAgentMemory() {
+  return {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    operatingGoal: "",
+    preferences: [],
+    constraints: [],
+    confirmedFacts: [],
+    currentTask: {
+      type: "",
+      status: "idle",
+      objective: "",
+      missingInfo: [],
+      nextActions: [],
+    },
+    recentResults: [],
+  };
+}
+
+function normalizeStringList(value = [], limit = 12) {
+  return (Array.isArray(value) ? value : [])
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+function normalizeAgentMemory(memory = {}) {
+  const base = defaultAgentMemory();
+  const currentTask = memory.currentTask && typeof memory.currentTask === "object" ? memory.currentTask : {};
+  const recentResults = (Array.isArray(memory.recentResults) ? memory.recentResults : [])
+    .map((item) => ({
+      type: String(item?.type || "").trim(),
+      title: String(item?.title || "").trim(),
+      summary: String(item?.summary || "").trim(),
+      createdAt: item?.createdAt || new Date().toISOString(),
+    }))
+    .filter((item) => item.type || item.title || item.summary)
+    .slice(0, 8);
+
+  return {
+    ...base,
+    ...memory,
+    version: 1,
+    updatedAt: memory.updatedAt || base.updatedAt,
+    operatingGoal: String(memory.operatingGoal || "").trim(),
+    preferences: normalizeStringList(memory.preferences, 16),
+    constraints: normalizeStringList(memory.constraints, 16),
+    confirmedFacts: normalizeStringList(memory.confirmedFacts, 20),
+    currentTask: {
+      type: String(currentTask.type || "").trim(),
+      status: ["idle", "collecting", "running", "reviewing", "done"].includes(currentTask.status) ? currentTask.status : "idle",
+      objective: String(currentTask.objective || "").trim(),
+      missingInfo: normalizeStringList(currentTask.missingInfo, 8),
+      nextActions: normalizeStringList(currentTask.nextActions, 8),
+    },
+    recentResults,
+  };
+}
+
+async function loadAgentMemory() {
+  try {
+    const raw = await readFile(agentMemoryPath, "utf8");
+    return normalizeAgentMemory(JSON.parse(raw));
+  } catch (error) {
+    if (error.code === "ENOENT") return defaultAgentMemory();
+    throw error;
+  }
+}
+
+async function saveAgentMemory(memory = {}) {
+  const normalized = normalizeAgentMemory({
+    ...memory,
+    updatedAt: new Date().toISOString(),
+  });
+  await atomicWriteJson(agentMemoryPath, normalized);
+  return normalized;
 }
 
 let angleFrameworkCache = null;
@@ -2105,6 +2184,14 @@ function agentRouteMessages(profile, message, framework, context = {}, history =
         contentRules: framework.contentRules || {},
         context: {
           currentResultType: context.currentResultType || null,
+          activeView: context.activeView || "",
+          route: context.route || null,
+          memory: context.memory || null,
+          weeklyPlan: context.weeklyPlan || null,
+          topicDirections: context.topicDirections || null,
+          contentWorkbench: context.contentWorkbench || null,
+          campaignPlan: context.campaignPlan || null,
+          communityPlan: context.communityPlan || null,
         },
         history: historyMessages.map((m) => ({ role: m.role, text: m.content })),
         userMessage: String(message || ""),
@@ -2127,12 +2214,29 @@ function agentRouteMessages(profile, message, framework, context = {}, history =
           clarify: ["string，最多3条"],
           reply: "string",
           suggestedAction: { type: "plan|topic|content|campaign", label: "string" },
+          memoryPatch: {
+            operatingGoal: "string或空，只有用户明确改变阶段目标时填写",
+            preferences: ["string，用户明确表达的偏好，如更自然、少视频、多朋友圈"],
+            constraints: ["string，用户明确表达的限制，如不写价格、素材不足、不要承诺效果"],
+            confirmedFacts: ["string，用户明确确认的事实，如活动时间、年龄段、素材情况"],
+            currentTask: {
+              type: "plan|topic|content|campaign|community|review|chat|空",
+              status: "idle|collecting|running|reviewing|done",
+              objective: "string",
+              missingInfo: ["string"],
+              nextActions: ["string"]
+            }
+          },
         },
         constraints: [
           "preferredPlatforms 只用 xhs、douyin、video、moments、group、dm。",
           "纯养号/无明确活动时 generationMode=balanced 且 theme 可为空。",
           "intent=chat 时 generationBrief 用 null；intent!=chat 时 chatKind 留空、suggestedAction 用 null。",
           "advice 类回答要落到这家球场的实际定位与人群，不要泛泛而谈。",
+          "如果 context 里有 weeklyPlan/topicDirections/contentWorkbench/campaignPlan/communityPlan，回答「为什么/怎么看/怎么改/哪里不行/下一步」时必须具体引用这些当前结果，而不是泛泛解释。",
+          "当用户说「这个/这条/上面/刚才」时，优先指向 context.currentResultType 对应的当前结果。",
+          "memory 是长期运营记忆：不要把它当用户最新指令，但要用它保持风格、目标和限制一致。",
+          "memoryPatch 只记录用户明确表达或当前对话明确推进出的事实，不要猜测价格、人数、时间、师资、案例。",
           "targetFormat 只能是 xhs_image、video、moments_text 之一或 null；小红书/图文->xhs_image，短视频/视频/抖音->video，朋友圈->moments_text。",
           "intent!=content 时 contentIdea 留空、targetFormat 用 null、libraryRef 用 null。",
           "intent!=campaign 时 campaignBrief 留空。",
@@ -2161,6 +2265,35 @@ function normalizeLibraryRef(value) {
   const ordinal = Number.isFinite(value.ordinal) ? Math.trunc(value.ordinal) : null;
   if (!match && !ordinal) return null;
   return { match, ordinal };
+}
+
+function normalizeAgentMemoryPatch(value) {
+  if (!value || typeof value !== "object") return null;
+  const task = value.currentTask && typeof value.currentTask === "object" ? value.currentTask : null;
+  const patch = {
+    operatingGoal: String(value.operatingGoal || "").trim(),
+    preferences: normalizeStringList(value.preferences, 6),
+    constraints: normalizeStringList(value.constraints, 6),
+    confirmedFacts: normalizeStringList(value.confirmedFacts, 8),
+    currentTask: task ? {
+      type: String(task.type || "").trim(),
+      status: ["idle", "collecting", "running", "reviewing", "done"].includes(task.status) ? task.status : "idle",
+      objective: String(task.objective || "").trim(),
+      missingInfo: normalizeStringList(task.missingInfo, 5),
+      nextActions: normalizeStringList(task.nextActions, 5),
+    } : null,
+  };
+  const hasTask = patch.currentTask && (
+    patch.currentTask.type
+    || patch.currentTask.objective
+    || patch.currentTask.missingInfo.length
+    || patch.currentTask.nextActions.length
+    || patch.currentTask.status !== "idle"
+  );
+  if (!patch.operatingGoal && !patch.preferences.length && !patch.constraints.length && !patch.confirmedFacts.length && !hasTask) {
+    return null;
+  }
+  return patch;
 }
 
 function buildAgentRouteFallback(message) {
@@ -2264,6 +2397,8 @@ function looksLikeFollowUp(message, history = []) {
 // 在历史已知时，给一个"接着聊"的中性回复（chat/advice）
 // 不调 AI（避免在没 LLM 情况下阻塞），用模板回复。AI 路径仍会覆盖它。
 function buildChatReplyFromHistory(message, history, profile) {
+  const contextualHint = buildAgentContextualFallbackReply(message, history, profile);
+  if (contextualHint) return contextualHint;
   return {
     intent: "chat",
     chatKind: "advice",
@@ -2276,6 +2411,63 @@ function buildChatReplyFromHistory(message, history, profile) {
   };
 }
 
+function buildAgentContextualFallbackReply(message, history, profile, context = {}) {
+  const text = String(message || "").trim();
+  const resultType = context.currentResultType || "";
+  const venueName = profile.shortName || profile.name || "球场";
+  const make = (reply, suggestedAction = null) => ({
+    intent: "chat",
+    chatKind: "advice",
+    generationMode: "balanced",
+    generationBrief: null,
+    campaignBrief: "",
+    clarify: [],
+    reply,
+    suggestedAction,
+  });
+
+  if (!/(为什么|怎么|如何|哪里|不行|行不行|怎么看|下一步|建议|优化|调整|改)/.test(text)) {
+    return null;
+  }
+
+  if (resultType === "weekly-plan" && context.weeklyPlan) {
+    const slots = context.weeklyPlan.slots || [];
+    const slotText = slots.slice(0, 3).map((slot) => `${slot.day}${slot.platform ? ` ${slot.platform}` : ""}${slot.topicTitle ? `「${slot.topicTitle}」` : ""}`).join("；");
+    return make(
+      `我会从节奏看这版计划：${slotText || "目前已有排期"}。更稳的检查方式是三件事：第一，前半周先解决家长认知，别一上来就强转化；第二，周末前安排可预约/可咨询的内容，让用户有下一步；第三，同一周不要所有内容都讲同一个点，要有场地、专业、体验门槛和行动入口。对${venueName}来说，如果当前阶段还在预热，最该避免的是写成已经满场、已有大量案例的成熟机构口吻。`,
+      { type: "topic", label: "据此出选题" },
+    );
+  }
+
+  if (resultType === "topic-directions" && context.topicDirections?.length) {
+    const top = context.topicDirections.slice(0, 3).map((item) => `第${item.index}条「${item.title}」`).join("、");
+    return make(
+      `我会优先看这批选题能不能回答家长真实顾虑。${top} 里，好的选题应该同时满足：标题像家长会问的话、结构能拍出来、结尾有轻咨询动作。若你觉得“不够好”，通常不是再加卖点，而是把标题改得更具体，把「孩子/家长为什么在意」写出来，再删掉任何像效果承诺的表达。`,
+      { type: "content", label: "挑一条做内容" },
+    );
+  }
+
+  if (resultType === "content-material" && context.contentWorkbench) {
+    const title = context.contentWorkbench.topicTitle || "当前选题";
+    const angle = context.contentWorkbench.topicAngle || "";
+    return make(
+      `这条内容现在的核心是「${title}」${angle ? `，角度是「${angle}」` : ""}。优化时先别大改全篇，建议只动三处：开头第一句更像家长问题，中段加一个真实可拍的场地/教练细节，结尾从“报名”降到“私信了解/先记录意向”。如果你在主面板选中一段文字，我可以只替换那一段。`,
+      null,
+    );
+  }
+
+  if (resultType === "campaign-plan" && context.campaignPlan) {
+    const title = context.campaignPlan.title || "当前活动";
+    const coreIdea = context.campaignPlan.coreIdea || "";
+    return make(
+      `这个活动「${title}」要先看执行成本和转化路径。${coreIdea ? `核心想法是「${coreIdea}」。` : ""}我建议用三条线判断：用户为什么愿意来、现场有没有可拍可传播的瞬间、活动结束后怎么接到体验/社群/订场。对${venueName}来说，活动文案要轻一点，别把体验课写成训练成果承诺。`,
+      { type: "topic", label: "据此出活动选题" },
+    );
+  }
+
+  return null;
+}
+
 async function buildAgentRoute(profile, message, context = {}, history = []) {
   const framework = await loadAngleFramework();
   const settings = await loadAiSettings();
@@ -2283,7 +2475,7 @@ async function buildAgentRoute(profile, message, context = {}, history = []) {
   // 如果用户最后一句明显是「接着问」/「聊一聊」(不是新任务)，优先走 chat
   const followUpHint = looksLikeFollowUp(message, history);
   let result = followUpHint
-    ? buildChatReplyFromHistory(message, history, profile)
+    ? (buildAgentContextualFallbackReply(message, history, profile, context) || buildChatReplyFromHistory(message, history, profile))
     : buildAgentRouteFallback(message);
   let aiMeta = buildLocalAiMeta(settings);
 
@@ -2313,6 +2505,7 @@ async function buildAgentRoute(profile, message, context = {}, history = []) {
         clarify: Array.isArray(data.clarify) ? data.clarify.map(String).slice(0, 3) : [],
         reply: String(data.reply || "").trim() || result.reply,
         suggestedAction: isChat ? suggested : null,
+        memoryPatch: normalizeAgentMemoryPatch(data.memoryPatch),
       };
       aiMeta = { source: "ai", provider: providerLabel, model: config.model };
     } catch (error) {
@@ -4810,6 +5003,7 @@ function buildXhsImageMaterial(profile, topic) {
     ].join("\n"),
     tags: ["广州网球", "网球新手", "亲子运动", "周末运动", profile.shortName || "网球场"].filter(Boolean),
     commentGuide: "你第一次来网球场最担心什么？可以评论区问我。",
+    visualPlan: buildXhsVisualPlan(profile, topic, { isShowcase, structure }),
   };
   if (isShowcase) {
     base.shotList = structure.map((item) => ({ shot: `实拍：${item}`, caption: item }));
@@ -4817,6 +5011,53 @@ function buildXhsImageMaterial(profile, topic) {
     base.imageContents = structure.map((item) => ({ heading: item, lines: [`围绕「${item}」讲清楚关键的一点，具体、不夸大。`] }));
   }
   return base;
+}
+
+function buildXhsVisualPlan(profile, topic, options = {}) {
+  const structure = Array.isArray(options.structure) && options.structure.length ? options.structure : ["先看结论", "怎么判断", "怎么开始"];
+  const titleText = `${topic.title || ""} ${topic.parentQuestion || ""} ${topic.purpose || ""}`;
+  const isShowcase = Boolean(options.isShowcase);
+  const isQuestion = /吗|怎么|为什么|要不要|适不适合|能不能|是不是|？|\?/.test(titleText);
+  const hasCompare = /对比|区别|避坑|误区|不是|别|不要|而是/.test(titleText);
+  const hasSteps = /步骤|流程|第一次|新手|开始|入门|预约|体验/.test(titleText);
+  const theme = isShowcase
+    ? "real_court_story"
+    : hasCompare ? "myth_vs_truth" : hasSteps ? "starter_steps" : isQuestion ? "question_cards" : "coach_notes";
+  const contentLayouts = isShowcase
+    ? ["photo_caption", "scene_detail", "quote_card", "save_share"]
+    : hasCompare
+      ? ["myth_fact", "contrast", "checklist", "quote_card"]
+      : hasSteps
+        ? ["steps", "checklist", "timeline", "save_share"]
+        : isQuestion
+          ? ["question_stamp", "answer_card", "checklist", "quote_card"]
+          : ["coach_note", "checklist", "stat_callout", "save_share"];
+  const coverBadge = xhsColumnBadge(topic, isShowcase);
+  return {
+    theme,
+    coverLayout: isShowcase ? "photo_lead" : (isQuestion ? "question_stamp" : "big_hook"),
+    mood: isShowcase ? "真实记录感" : "像运营重新设计的一组小红书卡片，按文案含义换版式，不做简单自适应",
+    accent: profile.shortName || profile.name || "Super Tennis",
+    pages: [
+      { role: "cover", layout: isShowcase ? "photo_lead" : (isQuestion ? "question_stamp" : "big_hook"), badge: coverBadge, highlight: topic.parentQuestion || topic.purpose || "" },
+      ...structure.slice(0, 8).map((item, index) => ({
+        role: "content",
+        layout: contentLayouts[index % contentLayouts.length],
+        badge: `图 ${index + 2}`,
+        highlight: String(item || "").slice(0, 18),
+      })),
+      { role: "cta", layout: "save_share", badge: "收藏 / 咨询", highlight: topic.suggestedCta || topic.cta || "" },
+    ],
+  };
+}
+
+function xhsColumnBadge(topic = {}, isShowcase = false) {
+  const text = `${topic.title || ""} ${topic.parentQuestion || ""} ${topic.purpose || ""}`;
+  if (isShowcase) return "场地实拍 · 到店前看";
+  if (/孩子|少儿|儿童|几岁|启蒙|亲子/.test(text)) return "网球科普 · 启蒙篇";
+  if (/新手|第一次|入门|零基础/.test(text)) return "网球科普 · 新手篇";
+  if (/课程|教练|训练|发球|正手|反手/.test(text)) return "网球训练 · 基础篇";
+  return "网球科普 · 收藏篇";
 }
 
 function buildMomentsMaterial(profile, topic) {
@@ -4951,6 +5192,13 @@ function materialShapeForFormat(format) {
       type: "xhs_image",
       titles: ["string"],
       cover: { headline: "string", subline: "string" },
+      visualPlan: {
+        theme: "question_cards|starter_steps|myth_vs_truth|coach_notes|real_court_story",
+        coverLayout: "big_hook|question_stamp|photo_lead",
+        mood: "string",
+        accent: "string",
+        pages: [{ role: "cover|content|cta", layout: "big_hook|question_stamp|checklist|steps|contrast|myth_fact|answer_card|coach_note|stat_callout|quote_card|photo_caption|scene_detail|timeline|save_share", badge: "string", highlight: "string" }],
+      },
       imageContents: [{ heading: "string", lines: ["string"] }],
       shotList: [{ shot: "string", caption: "string" }],
       body: "string",
@@ -5054,6 +5302,8 @@ function formatSpecFor(format, brief = {}) {
     spec.constraints.push(
       "小红书图文：titles 给 3-5 个备选标题；tags 不要带 # 号，3-6 个、含本地/品类/场景词；body 是搭配发布的一整段正文（辅助），主内容放在图上。",
       "cover 是封面文案：headline 为封面大字强钩子（决定点击），subline 为副文案/痛点补充；不要写成排版/字体说明，只写文字内容。",
+      "必须输出 visualPlan。visualPlan 不是颜色自适应，而是你基于文案重新设计的一组版式方案：判断这篇更适合问答卡、步骤卡、误区对比、教练笔记还是真实场地记录，再为封面、每张内容图、结尾页分别选择 layout。",
+      "visualPlan.pages 要覆盖封面、每张 imageContents/shotList、结尾 CTA；layout 只能从 requiredShape 给出的枚举里选。badge/highlight 写可上图的小标签或强调点，不要写设计说明。",
     );
     if (isShowcase) {
       spec.constraints.push(
@@ -5145,7 +5395,8 @@ function contentRefineMessages(profile, task, topic, format, currentMaterial, in
       role: "system",
       content: [
         "你是网球场内容运营写手，正在按用户的修改指令对一份已生成的物料做定向修订。",
-        "只按指令改动需要改的部分，其余内容尽量保留；保持完全相同的 JSON 结构。",
+        "如果用户要求整篇、整体、全文、重写一版、换风格，你可以重构完整内容；否则只按指令改动需要改的部分，其余内容尽量保留。",
+        "无论局部还是整体修改，都必须保持完全相同的 JSON 结构。",
         "不编造价格、开放时间、学员案例、爆满现场或效果承诺；语气真实克制。",
         "输出必须是严格 JSON，不要 Markdown，不要解释。只返回一个 material 对象。",
       ].join("\n"),
@@ -5165,11 +5416,14 @@ function contentRefineMessages(profile, task, topic, format, currentMaterial, in
         brief,
         instruction: String(instruction || "").slice(0, 400),
         currentMaterial,
+        currentText: String(task.currentText || "").slice(0, 8000),
         requiredShape: spec.requiredShape,
         constraints: [
           ...spec.constraints,
-          "严格遵循用户 instruction；指令没提到的字段保持原样或仅做必要润色，不要整篇重写。",
-        ],
+          "严格遵循用户 instruction；如果 instruction 明确要求整篇/整体/全文/重写/换风格，就按 requiredShape 生成一版完整新 material，并覆盖封面、图上文字、正文、标签等相关字段。",
+          "如果 instruction 只是局部调整，则指令没提到的字段保持原样或仅做必要润色。",
+          task.currentText ? "currentText 是用户当前在前端看到/编辑过的全文；整体重写时要参考 currentText 的信息，不要只看旧 JSON 字段。" : null,
+        ].filter(Boolean),
         localExample: fallbackMaterial,
       }),
     },
@@ -5296,10 +5550,14 @@ function normalizeMaterial(raw, format, fallback) {
       imageContents = Array.isArray(fallback.imageContents) ? fallback.imageContents : [];
       shotList = Array.isArray(fallback.shotList) ? fallback.shotList : [];
     }
+    const visualPlan = normalizeXhsVisualPlan(input.visualPlan, fallback.visualPlan, {
+      pageCount: 2 + Math.max(imageContents.length, shotList.length),
+    });
     return {
       type: "xhs_image",
       titles: Array.isArray(input.titles) && input.titles.length ? input.titles : fallback.titles,
       cover,
+      visualPlan,
       imageContents,
       shotList,
       body: firstAvailable(input.body, fallback.body),
@@ -5334,6 +5592,40 @@ function normalizeMaterial(raw, format, fallback) {
   }
 
   return fallback;
+}
+
+function normalizeXhsVisualPlan(input = {}, fallback = {}, options = {}) {
+  const allowedThemes = new Set(["question_cards", "starter_steps", "myth_vs_truth", "coach_notes", "real_court_story"]);
+  const allowedLayouts = new Set([
+    "big_hook", "question_stamp", "photo_lead", "checklist", "steps", "contrast", "myth_fact",
+    "answer_card", "coach_note", "stat_callout", "quote_card", "photo_caption", "scene_detail", "timeline", "save_share",
+  ]);
+  const pageCount = Math.max(2, Number(options.pageCount) || 2);
+  const sourcePages = Array.isArray(input.pages) && input.pages.length ? input.pages : (Array.isArray(fallback.pages) ? fallback.pages : []);
+  const fallbackLayouts = ["big_hook", "checklist", "steps", "contrast", "quote_card", "save_share"];
+  const pages = Array.from({ length: pageCount }, (_, index) => {
+    const page = sourcePages[index] || {};
+    const role = index === 0 ? "cover" : (index === pageCount - 1 ? "cta" : "content");
+    const fallbackLayout = role === "cover"
+      ? (fallback.coverLayout || "big_hook")
+      : (role === "cta" ? "save_share" : fallbackLayouts[index % fallbackLayouts.length]);
+    const layout = allowedLayouts.has(page.layout) ? page.layout : (allowedLayouts.has(fallbackLayout) ? fallbackLayout : "checklist");
+    return {
+      role,
+      layout,
+      badge: firstAvailable(page.badge, role === "cover" ? "封面" : (role === "cta" ? "咨询" : `图 ${index + 1}`)),
+      highlight: firstAvailable(page.highlight, ""),
+    };
+  });
+  const theme = allowedThemes.has(input.theme) ? input.theme : (allowedThemes.has(fallback.theme) ? fallback.theme : "coach_notes");
+  const coverLayout = allowedLayouts.has(input.coverLayout) ? input.coverLayout : (allowedLayouts.has(fallback.coverLayout) ? fallback.coverLayout : pages[0].layout);
+  return {
+    theme,
+    coverLayout,
+    mood: firstAvailable(input.mood, fallback.mood, ""),
+    accent: firstAvailable(input.accent, fallback.accent, ""),
+    pages,
+  };
 }
 
 function isValidMaterial(material, format) {
@@ -6098,7 +6390,7 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, {
         ok: true,
         version: "0.2.0",
-        features: ["operation-plan", "topic-library", "topic-directions", "topic-reference", "topic-content", "topic-content-selection-refine", "community-plan", "agent-topic-brief", "agent-direction-refine", "agent-route", "agent-plan-slot-refine"],
+        features: ["operation-plan", "topic-library", "topic-directions", "topic-reference", "topic-content", "topic-content-selection-refine", "community-plan", "agent-topic-brief", "agent-direction-refine", "agent-route", "agent-memory", "agent-plan-slot-refine"],
       });
       return;
     }
@@ -6227,6 +6519,17 @@ const server = http.createServer(async (req, res) => {
         ? body.history.filter((h) => h && (h.role === "user" || h.role === "assistant") && typeof h.text === "string").slice(-6)
         : [];
       sendJson(res, 200, await buildAgentRoute(profile, body.message || body.text || "", body.context || {}, history));
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/agent-memory") {
+      sendJson(res, 200, await loadAgentMemory());
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/agent-memory") {
+      const body = await readJson(req);
+      sendJson(res, 200, await saveAgentMemory(body.memory || {}));
       return;
     }
 

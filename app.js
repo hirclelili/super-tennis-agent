@@ -53,6 +53,7 @@ const els = {
   agentPanel: document.querySelector("#agentPanel"),
   agentContextLabel: document.querySelector("#agentContextLabel"),
   agentExpandBtn: document.querySelector("#agentExpandBtn"),
+  agentMemorySummary: document.querySelector("#agentMemorySummary"),
   agentMessages: document.querySelector("#agentMessages"),
   agentInput: document.querySelector("#agentInput"),
   agentSendBtn: document.querySelector("#agentSendBtn"),
@@ -69,6 +70,13 @@ const els = {
     tone: document.querySelector("#toneInput"),
     booking: document.querySelector("#bookingInput"),
     wechat: document.querySelector("#wechatInput"),
+    brandPrimary: document.querySelector("#brandPrimaryInput"),
+    brandSecondary: document.querySelector("#brandSecondaryInput"),
+    brandTemplate: document.querySelector("#brandTemplateInput"),
+    brandLogo: document.querySelector("#brandLogoInput"),
+    brandLogoData: document.querySelector("#brandLogoDataInput"),
+    brandLogoPreview: document.querySelector("#brandLogoPreview"),
+    brandFooter: document.querySelector("#brandFooterInput"),
   },
   task: {
     goal: document.querySelector("#goalInput"),
@@ -131,6 +139,7 @@ const CAMPAIGN_MATERIAL_DESCRIPTIONS = {
 let topicsReady = false;
 let activeView = "plan";
 let agentSession = { open: false, expanded: false, messages: [], priorBrief: null, lastMode: null, busy: false, pendingResult: false, activeResult: null, activeFormat: null, selectedMaterial: null };
+let agentMemory = null;
 let currentRoute = { module: "plan", page: "setup", slotIndex: null };
 let profileReturnRoute = null;
 let apiBase = "";
@@ -544,6 +553,392 @@ function materialToText(m) {
   return JSON.stringify(m, null, 2);
 }
 
+function brandSettings() {
+  const brand = profile?.brandTemplate || {};
+  return {
+    primaryColor: brand.primaryColor || "#176c43",
+    secondaryColor: brand.secondaryColor || "#eef7ef",
+    template: brand.template || "clean",
+    footerText: brand.footerText || profile?.shortName || profile?.name || "Super Tennis",
+    logoDataUrl: brand.logoDataUrl || "",
+  };
+}
+
+function xhsVisualPlan(material) {
+  const plan = material?.visualPlan || {};
+  const pages = Array.isArray(plan.pages) ? plan.pages : [];
+  return {
+    theme: plan.theme || "coach_notes",
+    coverLayout: plan.coverLayout || "big_hook",
+    mood: plan.mood || "",
+    accent: plan.accent || "",
+    pages,
+  };
+}
+
+function xhsPlanPage(plan, index, kind) {
+  const page = plan.pages[index] || {};
+  const fallbackLayout = kind === "cover" ? (plan.coverLayout || "big_hook") : (kind === "cta" ? "save_share" : "checklist");
+  return {
+    layout: page.layout || fallbackLayout,
+    badge: page.badge || (kind === "cover" ? "封面" : (kind === "cta" ? "收藏 / 咨询" : `图 ${index + 1}`)),
+    highlight: page.highlight || "",
+  };
+}
+
+function xhsTextDensity(text) {
+  const length = String(text || "").replace(/\s+/g, "").length;
+  if (length <= 10) return "short";
+  if (length <= 18) return "medium";
+  if (length <= 28) return "long";
+  return "dense";
+}
+
+function xhsPageEyebrow(page) {
+  if (page.kind === "cover") return "TENNIS FOR KIDS";
+  if (page.kind === "cta") return "SAVE & ASK";
+  return page.badge || "TENNIS NOTE";
+}
+
+function xhsPublishPages(material) {
+  if (!material || material.type !== "xhs_image") return [];
+  const pages = [];
+  const visualPlan = xhsVisualPlan(material);
+  const cover = material.cover || {};
+  const titles = Array.isArray(material.titles) ? material.titles : [];
+  const headline = cover.headline || titles[0] || "小红书图文";
+  pages.push({
+    kind: "cover",
+    label: "封面",
+    theme: visualPlan.theme,
+    ...xhsPlanPage(visualPlan, 0, "cover"),
+    title: headline,
+    subtitle: cover.subline || titles[1] || "",
+    lines: [],
+  });
+
+  const imageContents = Array.isArray(material.imageContents) ? material.imageContents : [];
+  const shotList = Array.isArray(material.shotList) ? material.shotList : [];
+  if (imageContents.length) {
+    imageContents.slice(0, 8).forEach((item, index) => {
+      const pageIndex = index + 1;
+      pages.push({
+        kind: "content",
+        label: `第 ${pageIndex + 1} 页`,
+        theme: visualPlan.theme,
+        ...xhsPlanPage(visualPlan, pageIndex, "content"),
+        title: item.heading || `第 ${index + 1} 点`,
+        subtitle: "",
+        lines: (item.lines || []).filter(Boolean).slice(0, 5),
+      });
+    });
+  } else if (shotList.length) {
+    shotList.slice(0, 8).forEach((item, index) => {
+      const pageIndex = index + 1;
+      pages.push({
+        kind: "shot",
+        label: `第 ${pageIndex + 1} 页`,
+        theme: visualPlan.theme,
+        ...xhsPlanPage(visualPlan, pageIndex, "shot"),
+        title: item.caption || `图 ${index + 1}`,
+        subtitle: item.shot || "",
+        lines: item.shot ? [`拍摄：${item.shot}`] : [],
+      });
+    });
+  }
+
+  const cta = material.commentGuide || "";
+  const tags = (material.tags || []).map((tag) => `#${String(tag).replace(/^#/, "")}`).join(" ");
+  pages.push({
+    kind: "cta",
+    label: "结尾页",
+    theme: visualPlan.theme,
+    ...xhsPlanPage(visualPlan, pages.length, "cta"),
+    title: "想了解更多，可以这样问我",
+    subtitle: cta,
+    lines: tags ? [tags] : [],
+  });
+  return pages;
+}
+
+function renderXhsTemplatePreview(material) {
+  const pages = xhsPublishPages(material);
+  if (!pages.length) return "";
+  const brand = brandSettings();
+  const logo = brand.logoDataUrl
+    ? `<img src="${brand.logoDataUrl}" alt="Logo" />`
+    : `<span>${escapeHtml((profile?.shortName || profile?.name || "ST").slice(0, 6))}</span>`;
+  return `
+    <section class="xhs-template-pack" data-xhs-pack>
+      <div class="xhs-template-head">
+        <div>
+          <h4>AI 版式图文预览</h4>
+          <small>按文案重新生成封面、内容页和结尾页版式，每页自动带 Logo</small>
+        </div>
+        <button class="secondary" data-xhs-export="all" type="button">导出 PNG</button>
+      </div>
+      <div class="xhs-template-grid">
+        ${pages.map((page, index) => `
+          <article class="xhs-template-page xhs-template-${escapeHtml(brand.template)} xhs-template-${escapeHtml(page.kind)} xhs-theme-${escapeHtml(page.theme)} xhs-layout-${escapeHtml(page.layout)} xhs-title-${xhsTextDensity(page.title)}"
+            data-xhs-page="${index}"
+            style="--brand:${escapeHtml(brand.primaryColor)}; --brand-soft:${escapeHtml(brand.secondaryColor)}">
+            <div class="xhs-page-shape"></div>
+            <div class="xhs-page-logo">${logo}</div>
+            <small class="xhs-page-label">${escapeHtml(page.badge || page.label)}</small>
+            <div class="xhs-page-main">
+              <span class="xhs-page-badge">${escapeHtml(xhsPageEyebrow(page))}</span>
+              <h3>${escapeHtml(page.title)}</h3>
+              ${page.subtitle ? `<p class="xhs-page-subtitle">${escapeHtml(page.subtitle)}</p>` : ""}
+              ${page.highlight ? `<p class="xhs-page-highlight">${escapeHtml(page.highlight)}</p>` : ""}
+              ${page.lines?.length ? `
+                <ul>
+                  ${page.lines.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}
+                </ul>
+              ` : ""}
+            </div>
+            <footer>${escapeHtml(brand.footerText)}</footer>
+          </article>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function canvasTextLines(ctx, text, maxWidth, maxLines = 5) {
+  const chars = String(text || "").split("");
+  const lines = [];
+  let line = "";
+  for (const char of chars) {
+    const next = line + char;
+    if (ctx.measureText(next).width > maxWidth && line) {
+      lines.push(line);
+      line = char;
+      if (lines.length >= maxLines) break;
+    } else {
+      line = next;
+    }
+  }
+  if (line && lines.length < maxLines) lines.push(line);
+  return lines;
+}
+
+function loadImageFromDataUrl(dataUrl) {
+  return new Promise((resolve) => {
+    if (!dataUrl) { resolve(null); return; }
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+}
+
+function drawRoundedRect(ctx, x, y, width, height, radius) {
+  const r = Math.min(radius, width / 2, height / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + width, y, x + width, y + height, r);
+  ctx.arcTo(x + width, y + height, x, y + height, r);
+  ctx.arcTo(x, y + height, x, y, r);
+  ctx.arcTo(x, y, x + width, y, r);
+  ctx.closePath();
+}
+
+function canvasPalette(brand) {
+  return {
+    dark: "#0b3d2d",
+    darker: "#073323",
+    lime: "#dfff36",
+    white: "#ffffff",
+    muted: "rgba(255,255,255,0.72)",
+    soft: "rgba(255,255,255,0.09)",
+  };
+}
+
+function drawCanvasPill(ctx, text, x, y, color, fill = "#dfff36") {
+  const label = String(text || "").slice(0, 18);
+  if (!label) return;
+  ctx.font = "900 30px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif";
+  const width = Math.min(620, ctx.measureText(label).width + 62);
+  ctx.fillStyle = fill;
+  drawRoundedRect(ctx, x, y, width, 64, 32);
+  ctx.fill();
+  ctx.fillStyle = color;
+  ctx.fillText(label, x + 31, y + 42);
+}
+
+function drawCanvasWrappedText(ctx, text, x, y, maxWidth, lineHeight, maxLines) {
+  const lines = canvasTextLines(ctx, text, maxWidth, maxLines);
+  lines.forEach((line, index) => ctx.fillText(line, x, y + index * lineHeight));
+  return y + lines.length * lineHeight;
+}
+
+function canvasTextDensity(text) {
+  const length = String(text || "").replace(/\s+/g, "").length;
+  if (length <= 10) return "short";
+  if (length <= 18) return "medium";
+  if (length <= 28) return "long";
+  return "dense";
+}
+
+function canvasTitleSize(text, isCover) {
+  const density = canvasTextDensity(text);
+  if (isCover) return { short: 120, medium: 104, long: 88, dense: 72 }[density];
+  return { short: 88, medium: 76, long: 64, dense: 54 }[density];
+}
+
+function drawCanvasLogoFallback(ctx, brand, palette) {
+  ctx.strokeStyle = "rgba(255,255,255,0.58)";
+  ctx.lineWidth = 3;
+  drawRoundedRect(ctx, 72, 94, 170, 64, 8);
+  ctx.stroke();
+  ctx.fillStyle = palette.white;
+  ctx.font = "900 28px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif";
+  ctx.fillText((profile?.shortName || profile?.name || brand.footerText || "SUPER").slice(0, 8).toUpperCase(), 94, 136);
+}
+
+async function renderXhsPageCanvas(page, index, brand) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1080;
+  canvas.height = 1440;
+  const ctx = canvas.getContext("2d");
+  const palette = canvasPalette(brand);
+  const layout = page.layout || (page.kind === "cover" ? "big_hook" : "checklist");
+  const isCover = page.kind === "cover";
+
+  ctx.fillStyle = layout === "contrast" || layout === "myth_fact" ? palette.darker : palette.dark;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = palette.lime;
+  ctx.beginPath();
+  ctx.arc(1058, 1410, 206, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(223,255,54,0.48)";
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.arc(990, 1364, 382, 0, Math.PI * 2);
+  ctx.stroke();
+  if (layout.includes("photo") || layout === "scene_detail") {
+    ctx.strokeStyle = "rgba(223,255,54,0.5)";
+    ctx.lineWidth = 4;
+    drawRoundedRect(ctx, 72, 206, 936, 460, 34);
+    ctx.stroke();
+    ctx.fillStyle = palette.soft;
+    drawRoundedRect(ctx, 72, 206, 936, 460, 34);
+    ctx.fill();
+  }
+
+  const logo = await loadImageFromDataUrl(brand.logoDataUrl);
+  if (logo) {
+    const maxW = 210;
+    const maxH = 86;
+    const scale = Math.min(maxW / logo.width, maxH / logo.height, 1);
+    const w = logo.width * scale;
+    const h = logo.height * scale;
+    ctx.drawImage(logo, 72, 94, w, h);
+  } else {
+    drawCanvasLogoFallback(ctx, brand, palette);
+  }
+
+  drawCanvasPill(ctx, page.badge || page.label || `第 ${index + 1} 页`, 716, 88, palette.dark, palette.lime);
+
+  const contentX = 72;
+  const contentW = 820;
+  let y = layout.includes("photo") || layout === "scene_detail" ? 760 : (isCover ? 600 : 350);
+  const eyebrow = xhsPageEyebrow(page);
+  if (eyebrow) {
+    ctx.fillStyle = palette.lime;
+    ctx.font = "900 36px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif";
+    ctx.save();
+    ctx.transform(1, 0, -0.08, 1, 0, 0);
+    ctx.fillText(String(eyebrow || "").toUpperCase(), contentX + 20, y - 86);
+    ctx.restore();
+  }
+
+  const titleSize = canvasTitleSize(page.title, isCover);
+  ctx.fillStyle = palette.white;
+  ctx.font = `950 ${titleSize}px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif`;
+  y = drawCanvasWrappedText(ctx, page.title, contentX, y, contentW, Math.round(titleSize * 1.1), isCover ? 5 : 4);
+
+  if (page.subtitle) {
+    ctx.fillStyle = palette.muted;
+    ctx.font = "800 36px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif";
+    y = drawCanvasWrappedText(ctx, page.subtitle, contentX, y + 50, contentW, 52, 3);
+    y += 24;
+  }
+
+  if (page.highlight) {
+    ctx.fillStyle = palette.lime;
+    const highlight = String(page.highlight || "").slice(0, 22);
+    ctx.font = "950 48px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif";
+    const boxW = Math.min(contentW, ctx.measureText(highlight).width + 62);
+    drawRoundedRect(ctx, contentX, y + 24, boxW, 78, 12);
+    ctx.fill();
+    ctx.fillStyle = palette.dark;
+    ctx.fillText(highlight, contentX + 31, y + 78);
+    y += 130;
+  }
+
+  const lines = Array.isArray(page.lines) ? page.lines : [];
+  if (lines.length) {
+    ctx.font = "800 35px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif";
+    lines.forEach((line, lineIndex) => {
+      if (layout === "steps" || layout === "timeline") {
+        ctx.fillStyle = palette.lime;
+        drawRoundedRect(ctx, contentX, y - 4, 54, 54, 14);
+        ctx.fill();
+        ctx.fillStyle = palette.dark;
+        ctx.font = "950 28px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif";
+        ctx.fillText(String(lineIndex + 1), contentX + 20, y + 33);
+        ctx.fillStyle = palette.white;
+        ctx.font = "800 35px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif";
+        drawCanvasWrappedText(ctx, line, contentX + 78, y + 34, contentW - 100, 48, 2);
+      } else {
+        ctx.fillStyle = palette.lime;
+        ctx.beginPath();
+        ctx.arc(contentX + 12, y + 16, 8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = palette.white;
+        drawCanvasWrappedText(ctx, line, contentX + 42, y + 30, contentW - 70, 48, 2);
+      }
+      y += 100;
+    });
+  }
+
+  ctx.fillStyle = palette.muted;
+  ctx.font = "900 32px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif";
+  ctx.fillText(`@${brand.footerText || profile?.shortName || profile?.name || "Super Tennis"}`, 72, 1330);
+  ctx.font = "700 26px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif";
+  ctx.fillText("内容以球场实际安排为准", 72, 1380);
+  return canvas;
+}
+
+function downloadCanvas(canvas, filename) {
+  const link = document.createElement("a");
+  link.download = filename;
+  link.href = canvas.toDataURL("image/png");
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function safeFileName(text) {
+  return String(text || "xhs").replace(/[\\/:*?"<>|\s]+/g, "-").slice(0, 40);
+}
+
+async function exportXhsPages() {
+  const entry = generatedMaterials.xhs_image;
+  if (!entry?.material) return;
+  const pages = xhsPublishPages(entry.material);
+  if (!pages.length) return;
+  const brand = brandSettings();
+  const base = safeFileName(currentTopic?.title || entry.material.titles?.[0] || "小红书图文");
+  showToast("正在导出 PNG");
+  for (let i = 0; i < pages.length; i += 1) {
+    const canvas = await renderXhsPageCanvas(pages[i], i, brand);
+    downloadCanvas(canvas, `${base}-${String(i + 1).padStart(2, "0")}.png`);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  }
+}
+
 function entryText(entry) {
   if (!entry) return "";
   return entry.editedText || materialToText(entry.material);
@@ -807,6 +1202,7 @@ function updatePlanStageContext(stage = els.fields.stage?.value || profile?.stag
 
 function fillProfileForm(data) {
   profile = data;
+  const brand = data.brandTemplate || {};
   els.fields.name.value = data.name || "";
   els.fields.shortName.value = data.shortName || "";
   els.fields.city.value = data.city || "";
@@ -818,10 +1214,23 @@ function fillProfileForm(data) {
   els.fields.tone.value = data.tone || "";
   els.fields.booking.value = data.booking || "";
   els.fields.wechat.value = data.wechat || "";
+  els.fields.brandPrimary.value = brand.primaryColor || "#176c43";
+  els.fields.brandSecondary.value = brand.secondaryColor || "#eef7ef";
+  els.fields.brandTemplate.value = brand.template || "clean";
+  els.fields.brandFooter.value = brand.footerText || "";
+  els.fields.brandLogoData.value = brand.logoDataUrl || "";
+  renderBrandLogoPreview(brand.logoDataUrl || "");
   els.venueNameLabel.textContent = data.shortName || data.name || "未命名球场";
   els.profileStatus.textContent = "已载入";
   els.profileStatus.classList.remove("status-error", "status-success");
   updatePlanStageContext(data.stage);
+}
+
+function renderBrandLogoPreview(dataUrl) {
+  if (!els.fields.brandLogoPreview) return;
+  els.fields.brandLogoPreview.innerHTML = dataUrl
+    ? `<img src="${dataUrl}" alt="Logo 预览" /><button class="ghost" id="clearBrandLogoBtn" type="button">移除 Logo</button>`
+    : "未上传 Logo";
 }
 
 function readProfileForm() {
@@ -838,6 +1247,14 @@ function readProfileForm() {
     tone: els.fields.tone.value.trim(),
     booking: els.fields.booking.value.trim(),
     wechat: els.fields.wechat.value.trim(),
+    brandTemplate: {
+      ...(profile?.brandTemplate || {}),
+      primaryColor: els.fields.brandPrimary.value || "#176c43",
+      secondaryColor: els.fields.brandSecondary.value || "#eef7ef",
+      template: els.fields.brandTemplate.value || "clean",
+      footerText: els.fields.brandFooter.value.trim(),
+      logoDataUrl: els.fields.brandLogoData.value.trim(),
+    },
   };
 }
 
@@ -1497,6 +1914,7 @@ function renderMaterialBlock(format, entry) {
   const meta = materialTypeMeta(format);
   const isFinal = entry.status === "final";
   const history = Array.isArray(entry.history) ? entry.history : [];
+  const templatePreview = format === "xhs_image" ? renderXhsTemplatePreview(entry.material) : "";
   const bodyHtml = `<article class="content-card edited-material"><pre>${escapeHtml(entryText(entry))}</pre></article>`;
   return `
     <div class="material-block ${isFinal ? "is-final" : ""}" data-format-block="${escapeHtml(format)}">
@@ -1510,11 +1928,12 @@ function renderMaterialBlock(format, entry) {
           <button class="${isFinal ? "secondary" : "primary"} material-finalize" data-format="${escapeHtml(format)}" type="button">${isFinal ? "取消定稿" : "定稿"}</button>
         </div>
       </div>
+      ${templatePreview}
       <div class="material-editable" data-material-editable="${escapeHtml(format)}" contenteditable="true" spellcheck="false">${bodyHtml}</div>
       ${renderMaterialAiMeta(entry.aiMeta)}
       <div class="material-refine">
-        <button class="secondary material-refine-apply" data-format="${escapeHtml(format)}" type="button">用 AI 修改选中文字</button>
-        <span>选中一段文字后，在对话助手里说怎么改</span>
+        <button class="secondary material-refine-apply" data-format="${escapeHtml(format)}" type="button">用 AI 修改这篇</button>
+        <span>不选文字=整篇修改；选中文字=只改选区</span>
       </div>
       <div class="selection-refine hidden" data-selection-refine="${escapeHtml(format)}">
         <small>已选中</small>
@@ -3001,6 +3420,230 @@ function activeResultData() {
   return null;
 }
 
+function defaultAgentMemory() {
+  return {
+    version: 1,
+    updatedAt: "",
+    operatingGoal: "",
+    preferences: [],
+    constraints: [],
+    confirmedFacts: [],
+    currentTask: {
+      type: "",
+      status: "idle",
+      objective: "",
+      missingInfo: [],
+      nextActions: [],
+    },
+    recentResults: [],
+  };
+}
+
+function normalizeAgentList(value = [], limit = 12) {
+  return (Array.isArray(value) ? value : [])
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+function normalizeAgentMemory(memory = {}) {
+  const base = defaultAgentMemory();
+  const task = memory.currentTask && typeof memory.currentTask === "object" ? memory.currentTask : {};
+  return {
+    ...base,
+    ...memory,
+    operatingGoal: String(memory.operatingGoal || "").trim(),
+    preferences: normalizeAgentList(memory.preferences, 16),
+    constraints: normalizeAgentList(memory.constraints, 16),
+    confirmedFacts: normalizeAgentList(memory.confirmedFacts, 20),
+    currentTask: {
+      type: String(task.type || "").trim(),
+      status: ["idle", "collecting", "running", "reviewing", "done"].includes(task.status) ? task.status : "idle",
+      objective: String(task.objective || "").trim(),
+      missingInfo: normalizeAgentList(task.missingInfo, 8),
+      nextActions: normalizeAgentList(task.nextActions, 8),
+    },
+    recentResults: (Array.isArray(memory.recentResults) ? memory.recentResults : []).slice(0, 8),
+  };
+}
+
+function mergeAgentMemoryPatch(memory, patch = {}) {
+  const current = normalizeAgentMemory(memory || {});
+  const uniq = (a = [], b = [], limit = 16) => [...new Set([...normalizeAgentList(a, limit), ...normalizeAgentList(b, limit)])].slice(0, limit);
+  const nextTask = patch.currentTask && typeof patch.currentTask === "object"
+    ? {
+        ...current.currentTask,
+        ...patch.currentTask,
+        missingInfo: normalizeAgentList(patch.currentTask.missingInfo ?? current.currentTask.missingInfo, 8),
+        nextActions: normalizeAgentList(patch.currentTask.nextActions ?? current.currentTask.nextActions, 8),
+      }
+    : current.currentTask;
+  return normalizeAgentMemory({
+    ...current,
+    operatingGoal: String(patch.operatingGoal || "").trim() || current.operatingGoal,
+    preferences: uniq(current.preferences, patch.preferences, 16),
+    constraints: uniq(current.constraints, patch.constraints, 16),
+    confirmedFacts: uniq(current.confirmedFacts, patch.confirmedFacts, 20),
+    currentTask: nextTask,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+async function loadAgentMemory() {
+  try {
+    agentMemory = normalizeAgentMemory(await apiRequest("/api/agent-memory"));
+  } catch {
+    agentMemory = defaultAgentMemory();
+  }
+  renderAgentMemorySummary();
+}
+
+async function saveAgentMemory(nextMemory) {
+  agentMemory = normalizeAgentMemory(nextMemory);
+  renderAgentMemorySummary();
+  try {
+    agentMemory = normalizeAgentMemory(await apiRequest("/api/agent-memory", { memory: agentMemory }));
+  } catch {
+    // 本地保存失败不阻塞当前工作流，下一次启动会重新读取服务端文件。
+  }
+  renderAgentMemorySummary();
+}
+
+function agentTaskTypeLabel(type) {
+  return {
+    plan: "一周计划",
+    topic: "选题",
+    content: "内容",
+    campaign: "活动",
+    community: "社群",
+    review: "评审",
+    chat: "咨询",
+  }[type] || "待定";
+}
+
+function renderAgentMemorySummary() {
+  if (!els.agentMemorySummary) return;
+  const memory = normalizeAgentMemory(agentMemory || {});
+  const task = memory.currentTask || {};
+  const goal = memory.operatingGoal || "尚未记录本阶段目标";
+  const objective = task.objective || "暂无进行中的任务";
+  const chips = [
+    memory.constraints.length ? `${memory.constraints.length} 条限制` : "",
+    memory.preferences.length ? `${memory.preferences.length} 条偏好` : "",
+    task.missingInfo?.length ? `缺 ${task.missingInfo.length} 项信息` : "",
+  ].filter(Boolean);
+  els.agentMemorySummary.innerHTML = `
+    <div>
+      <span>记忆</span>
+      <strong>${escapeHtml(goal)}</strong>
+    </div>
+    <small>${escapeHtml(agentTaskTypeLabel(task.type))} · ${escapeHtml(objective)}</small>
+    ${chips.length ? `<p>${chips.map(escapeHtml).join(" · ")}</p>` : ""}
+  `;
+}
+
+function rememberAgentResult(type, title, summary = "") {
+  const current = normalizeAgentMemory(agentMemory || {});
+  const result = {
+    type,
+    title: String(title || "").trim(),
+    summary: String(summary || "").trim(),
+    createdAt: new Date().toISOString(),
+  };
+  if (!result.type && !result.title && !result.summary) return;
+  saveAgentMemory({
+    ...current,
+    currentTask: {
+      ...current.currentTask,
+      type,
+      status: "done",
+      objective: result.title || current.currentTask.objective,
+      missingInfo: [],
+    },
+    recentResults: [result, ...current.recentResults].slice(0, 8),
+  });
+}
+
+function applyAgentMemoryPatch(patch) {
+  if (!patch || typeof patch !== "object") return;
+  saveAgentMemory(mergeAgentMemoryPatch(agentMemory || defaultAgentMemory(), patch));
+}
+
+function compactAgentItems(items = [], mapper = (item) => item, limit = 6) {
+  return (Array.isArray(items) ? items : [])
+    .map(mapper)
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+function buildAgentWorkspaceContext() {
+  const activeType = agentSession?.activeResult?.type || null;
+  const context = {
+    activeView,
+    currentResultType: activeType,
+    route: currentRoute,
+    memory: normalizeAgentMemory(agentMemory || {}),
+  };
+
+  if (currentPlan) {
+    const schedule = currentPlan.publishingSchedule || currentPlan.week || [];
+    context.weeklyPlan = {
+      title: currentPlan.overview?.title || "",
+      focus: currentPlan.overview?.focus || "",
+      slots: compactAgentItems(schedule, (slot) => ({
+        day: slot.day || "",
+        platform: slot.platform || "",
+        format: slot.format || "",
+        topicTitle: slot.topicTitle || slot.theme || slot.directionHint || "",
+        contentType: slot.contentType || "",
+      }), 7),
+    };
+  }
+
+  if (directionSession?.directions?.length) {
+    context.topicDirections = compactAgentItems(directionSession.directions, (topic, index) => ({
+      index: index + 1,
+      title: topic.title || "",
+      parentQuestion: topic.parentQuestion || "",
+      contentType: topic.contentType || "",
+      formats: topic.formats || [],
+    }), 8);
+  }
+
+  if (currentTopic) {
+    context.contentWorkbench = {
+      topicTitle: currentTopic.title || "",
+      topicAngle: contentBrief?.topicAngle || currentTopic.parentQuestion || currentTopic.purpose || "",
+      activeFormat: agentSession.activeFormat || "",
+      generatedFormats: Object.entries(generatedMaterials).map(([format, entry]) => ({
+        format,
+        status: entry?.status || "",
+      })),
+    };
+  }
+
+  if (currentCampaignPlan) {
+    context.campaignPlan = {
+      title: currentCampaignPlan.overview?.title || "",
+      audience: currentCampaignPlan.overview?.audience || "",
+      goal: currentCampaignPlan.overview?.goal || "",
+      coreIdea: currentCampaignPlan.overview?.coreIdea || "",
+      phases: compactAgentItems(currentCampaignPlan.timeline || currentCampaignPlan.phases, (phase) => (
+        typeof phase === "string" ? phase : (phase.phase || phase.title || phase.step || "")
+      ), 5),
+    };
+  }
+
+  if (communityPlansByGroup?.[currentGroupType]) {
+    context.communityPlan = {
+      groupType: currentGroupType,
+      title: communityPlansByGroup[currentGroupType]?.overview?.title || "",
+    };
+  }
+
+  return context;
+}
+
 async function generateDirections(opts = {}) {
   const { brief = null, mode = null, eventInfo = null, focus = null, fromAgent = false, sourceSlotIndex = null, maxDirections = null, campaignLink = null, restore: externalRestore, pipeline = null, slot = null } = opts;
   const restore = externalRestore
@@ -3639,15 +4282,17 @@ async function runAgentRoute(text) {
     // 带上最近 6 条对话历史（不含 chips 等元信息），让分类器能看到上下文
     const history = (agentSession.messages || [])
       .filter((m) => m && m.role && typeof m.text === "string")
+      .slice(0, -1)
       .slice(-6)
       .map((m) => ({ role: m.role, text: String(m.text).slice(0, 400) }));
     const data = await apiRequest("/api/agent/route", {
       profile,
       message: text,
       history,
-      context: { currentResultType: agentSession?.activeResult?.type || null },
+      context: buildAgentWorkspaceContext(),
     });
     agentSession.busy = false;
+    if (data.memoryPatch) applyAgentMemoryPatch(data.memoryPatch);
     const intent = data.intent || "chat";
 
     if (intent === "plan" || intent === "topic") {
@@ -3706,7 +4351,7 @@ function agentFormatLabel(format) {
 }
 
 function contentEditHint() {
-  return "可以说「生成短视频」「定稿」；要局部修改时，先在主面板选中文字，再告诉我怎么改。";
+  return "可以说「生成短视频」「整体改得更真实」「定稿」；选中文字后再说修改要求则只改选区。";
 }
 
 async function resolveLibraryTopic(ref) {
@@ -3756,6 +4401,7 @@ async function agentStartContent(data) {
     if (shaped && shaped.topic) {
       openContentForTopic(shaped.topic, fmt);
       agentSession.activeFormat = fmt || agentSession.activeFormat;
+      rememberAgentResult("content", shaped.topic.title || idea, fmt ? `已进入${agentFormatLabel(fmt)}生产` : "已进入内容生产");
       emitAgentCard("content-material", { text: `已在主面板打开内容生产：「${shaped.topic.title}」${fmt ? `，正在生成${agentFormatLabel(fmt)}` : ""}。${contentEditHint()}` });
     } else {
       throw new Error("整理结果为空");
@@ -3769,6 +4415,7 @@ async function agentStartContent(data) {
     openContentForIdea(topic, { title, topicAngle: idea, keyPoints: [], cta: "" });
     if (fmt) generateMaterial(fmt);
     agentSession.activeFormat = fmt || agentSession.activeFormat;
+    rememberAgentResult("content", title, fmt ? `已进入${agentFormatLabel(fmt)}生产` : "已进入内容生产");
     emitAgentCard("content-material", { text: `已在主面板打开内容生产：「${title}」${fmt ? `，正在生成${agentFormatLabel(fmt)}` : ""}。${contentEditHint()}` });
   }
 }
@@ -3806,6 +4453,7 @@ async function agentGenerate(extraBrief = null, { campaignLink = null } = {}) {
     const data = await generateDirections({ brief: agentSession.priorBrief, mode: agentSession.lastMode, fromAgent: true, campaignLink });
     agentSession.busy = false;
     agentSession.messages.pop();
+    rememberAgentResult("topic", `${data?.directions?.length || 0} 条选题方向`, resultRegistry["topic-directions"].summarize(data));
     emitAgentCard("topic-directions", { text: `${resultRegistry["topic-directions"].summarize(data)}。可以说「全部保存」「再来一批」「换朋友圈向」，或「第2条软一点」。` });
   } catch (error) {
     agentSession.busy = false;
@@ -3823,6 +4471,7 @@ async function agentGeneratePlan(brief = null, mode = null, campaignLink = null)
     agentSession.busy = false;
     agentSession.messages.pop();
     if (!plan) { pushAgentMessage("assistant", "计划没有生成成功，请补充信息后再试。"); return; }
+    rememberAgentResult("plan", plan?.overview?.title || "一周计划", resultRegistry["weekly-plan"].summarize(plan));
     emitAgentCard("weekly-plan", { text: `${resultRegistry["weekly-plan"].summarize(plan)}。可以说「重排一版」「据此出选题」，或「周三换成小红书图文」单条调整。` });
   } catch (error) {
     agentSession.busy = false;
@@ -3910,6 +4559,7 @@ async function agentGenerateCampaign(rawBrief = "") {
     currentCampaignBrief = brief;
     renderCampaignPlan(data);
     await persistCampaignPlan(data, brief);
+    rememberAgentResult("campaign", data?.overview?.title || brief, resultRegistry["campaign-plan"].summarize(data));
     emitAgentCard("campaign-plan", { text: `${resultRegistry["campaign-plan"].summarize(data)}。你可以继续「据此出选题」或「排活动周计划」。` });
   } catch (error) {
     agentSession.busy = false;
@@ -4041,7 +4691,7 @@ function routeContentIntent(text) {
     agentRefineMaterial(fmt, text);
     return true;
   }
-  if (/(改短|改长|短一点|长一点|精简|压缩|口语|正式|温和|开头|结尾|标题|钩子|换个?说法|换一种|加一?句|加个|删掉|去掉|润色|优化|改写|重写|改一下|改改|修改|调整|再软|再硬|更具体|具体一点|换标题)/.test(text)) {
+  if (/(整篇|整体|全文|全部|通篇|这一篇|这篇|这个图文|这版|再来一版|换一版|重新写|重写一版|改短|改长|短一点|长一点|精简|压缩|口语|正式|温和|真实|自然|小红书感|广告感|开头|结尾|标题|钩子|换个?说法|换一种|加一?句|加个|删掉|去掉|润色|优化|改写|重写|改一下|改改|修改|调整|再软|再硬|更具体|具体一点|换标题)/.test(text)) {
     agentRefineMaterial(fmt, text);
     return true;
   }
@@ -5105,6 +5755,8 @@ async function applyMaterialRefine(format, instruction) {
   const entry = generatedMaterials[format];
   if (!entry || !currentTopic) throw new Error("还没有可微调的内容");
   readContentBriefFromDom();
+  syncEditedMaterialFromDom(format);
+  const latestEntry = generatedMaterials[format] || entry;
   profile = readProfileForm();
   const content = await apiRequest("/api/topic-content/refine", {
     profile,
@@ -5115,7 +5767,8 @@ async function applyMaterialRefine(format, instruction) {
       planSlot: currentPlanSlot || undefined,
       brief: briefPayload(),
       format,
-      currentMaterial: entry.material,
+      currentMaterial: latestEntry.material,
+      currentText: entryText(latestEntry),
       instruction,
     },
   });
@@ -5124,8 +5777,8 @@ async function applyMaterialRefine(format, instruction) {
   }
   const material = (content.materials || [])[0];
   if (!material) throw new Error("微调失败");
-  const history = [...(entry.history || []), { material: entry.material, aiMeta: entry.aiMeta, label: "微调前" }];
-  generatedMaterials[format] = { ...entry, material, aiMeta: content.aiMeta || entry.aiMeta, history, status: "draft" };
+  const history = [...(latestEntry.history || []), { material: latestEntry.material, editedText: latestEntry.editedText, aiMeta: latestEntry.aiMeta, label: "整篇修改前" }];
+  generatedMaterials[format] = { ...latestEntry, material, editedText: "", aiMeta: content.aiMeta || latestEntry.aiMeta, history, status: "draft" };
   agentSession.activeFormat = format;
   rerenderContent();
   return material;
@@ -5271,7 +5924,14 @@ async function refineMaterial(format) {
   if (!entry || !currentTopic) return;
   const selectedText = selectionPanel(format)?.dataset.selectedText || activeSelectedMaterial(format)?.selectedText || "";
   if (!selectedText) {
-    showToast("请先在正文里选中要修改的文字", "error");
+    agentSession.activeFormat = format;
+    setAgentResultContext("content-material");
+    openAgent();
+    if (els.agentInput) {
+      els.agentInput.placeholder = "告诉我整篇怎么改，比如：更像小红书、少一点广告感、重写成真实经验";
+      els.agentInput.focus();
+    }
+    pushAgentMessage("assistant", `你可以直接说整篇怎么改，我会重写${agentFormatLabel(format)}的完整结构；如果只想改一句，先选中文字再说。`);
     return;
   }
   focusAgentForSelectedText(format);
@@ -5282,11 +5942,25 @@ async function agentRefineMaterial(format, instruction) {
   if (!generatedMaterials[format]) { pushAgentMessage("assistant", `还没有生成${agentFormatLabel(format)}，先说「生成${agentFormatLabel(format)}」。`); return; }
   const selected = activeSelectedMaterial(format);
   if (!selected?.selectedText) {
-    setView("content");
-    pushAgentMessage("assistant", "可以。先在主面板正文里选中要改的那段文字，然后在这里告诉我怎么改，我只替换选中的部分。");
+    await applyAiWholeMaterialRefine(format, instruction);
     return;
   }
   await applyAiSelectedTextRefine(format, instruction);
+}
+
+async function applyAiWholeMaterialRefine(format, instruction) {
+  if (!format || !generatedMaterials[format] || !currentTopic) return;
+  agentSession.busy = true;
+  renderAgentMessages();
+  try {
+    await applyMaterialRefine(format, instruction);
+    agentSession.busy = false;
+    pushAgentMessage("assistant", `已按你的要求整体修改${agentFormatLabel(format)}，主面板已更新。`);
+    syncLatestCardSnapshot();
+  } catch (error) {
+    agentSession.busy = false;
+    pushAgentMessage("assistant", `整体修改失败：${error.message}`);
+  }
 }
 
 async function applyAiSelectedTextRefine(format, instruction) {
@@ -5460,6 +6134,24 @@ els.saveProfileBtn.addEventListener("click", async () => {
   }
 });
 
+els.fields.brandLogo?.addEventListener("change", (event) => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    els.fields.brandLogoData.value = String(reader.result || "");
+    renderBrandLogoPreview(els.fields.brandLogoData.value);
+  };
+  reader.readAsDataURL(file);
+});
+
+els.profileView?.addEventListener("click", (event) => {
+  if (!event.target.closest("#clearBrandLogoBtn")) return;
+  els.fields.brandLogoData.value = "";
+  if (els.fields.brandLogo) els.fields.brandLogo.value = "";
+  renderBrandLogoPreview("");
+});
+
 els.profileShortcutBtn.addEventListener("click", () => {
   if (!["profile", "ai"].includes(currentRoute.module)) {
     profileReturnRoute = { ...currentRoute };
@@ -5594,6 +6286,8 @@ els.topicsView.addEventListener("change", (event) => {
 });
 
 els.contentView.addEventListener("click", (event) => {
+  const xhsExport = event.target.closest("[data-xhs-export]");
+  if (xhsExport) { exportXhsPages(); return; }
   const selectionApply = event.target.closest("[data-selection-apply]");
   if (selectionApply) {
     const format = selectionApply.dataset.selectionApply;
@@ -5784,7 +6478,7 @@ window.addEventListener("hashchange", () => {
 
 async function bootstrap() {
   loadAiSettings();
-  await Promise.all([loadProfile(), restoreWeeklyPlan()]);
+  await Promise.all([loadProfile(), restoreWeeklyPlan(), loadAgentMemory()]);
   restoreCommunityPlans();
   restoreCampaignPlans();
   loadFinishedContent();

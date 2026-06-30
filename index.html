@@ -290,6 +290,41 @@
                 </label>
               </div>
             </section>
+
+            <section class="page-section">
+              <div class="section-head">
+                <div>
+                  <h3>品牌图文模板</h3>
+                </div>
+              </div>
+              <div class="profile-fields profile-editor">
+                <label>
+                  主色
+                  <input id="brandPrimaryInput" type="color" value="#176c43" />
+                </label>
+                <label>
+                  辅助色
+                  <input id="brandSecondaryInput" type="color" value="#eef7ef" />
+                </label>
+                <label>
+                  图文模板
+                  <select id="brandTemplateInput">
+                    <option value="clean">清爽内容卡</option>
+                    <option value="field">球场实拍感</option>
+                  </select>
+                </label>
+                <label>
+                  Logo
+                  <input id="brandLogoInput" type="file" accept="image/*" />
+                </label>
+                <label class="wide">
+                  品牌固定文案
+                  <input id="brandFooterInput" placeholder="例如：Super Tennis · 广州网球体验" />
+                </label>
+                <textarea id="brandLogoDataInput" class="hidden" aria-hidden="true"></textarea>
+                <div class="brand-logo-preview wide" id="brandLogoPreview">未上传 Logo</div>
+              </div>
+            </section>
           </section>
 
           <section class="page-view hidden" id="aiView">
@@ -382,13 +417,13 @@
 
     <aside class="agent-dock" id="agentDock">
       <button class="agent-fab" id="agentFab" type="button" aria-label="打开对话助手">
-        <span class="agent-fab-icon">AI</span>
+        <span class="agent-fab-icon">Co</span>
         <span class="agent-fab-dot" hidden></span>
       </button>
-      <section class="agent-panel hidden" id="agentPanel" aria-label="对话助手">
+      <section class="agent-panel hidden" id="agentPanel" aria-label="运营 Copilot">
         <header class="agent-panel-head">
           <div>
-            <strong>运营助手</strong>
+            <strong>运营 Copilot</strong>
             <small id="agentContextLabel">和主工作区联动</small>
           </div>
           <div class="agent-head-actions">
@@ -403,9 +438,10 @@
           <button class="agent-quick-btn" data-agent-quick="community" type="button">社群节奏</button>
           <button class="agent-quick-btn" data-agent-quick="campaign" type="button">活动策划</button>
         </div>
+        <div class="agent-memory-strip" id="agentMemorySummary"></div>
         <div class="agent-messages" id="agentMessages"></div>
         <form class="agent-input-row" id="agentForm">
-          <textarea id="agentInput" rows="1" placeholder="输入运营想法，或直接说要生成什么"></textarea>
+          <textarea id="agentInput" rows="1" placeholder="告诉 Copilot 目标、限制，或直接说下一步要做什么"></textarea>
           <button class="primary" id="agentSendBtn" type="submit">发送</button>
         </form>
       </section>
