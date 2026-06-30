@@ -1893,6 +1893,12 @@ function renderMaterialCampaign(material) {
 
 function renderMaterialAiMeta(meta) {
   if (!meta) return "";
+  if (meta.source === "ai") {
+    return `<small class="ai-meta ai-meta-success">AI 已生成：${escapeHtml([meta.provider, meta.model].filter(Boolean).join(" / ") || "已调用")}</small>`;
+  }
+  if (meta.source === "local") {
+    return `<small class="ai-meta">本地规则生成：${escapeHtml(meta.reason || "未配置 AI")}</small>`;
+  }
   if (meta.source === "fallback") {
     return `<small class="ai-meta">AI 失败，已回退本地模板：${escapeHtml(meta.error || "AI 不可用")}</small>`;
   }
@@ -5970,6 +5976,7 @@ async function applyAiWholeMaterialRefine(format, instruction) {
   if (!format || !generatedMaterials[format] || !currentTopic) return;
   const beforeText = entryText(generatedMaterials[format]).trim();
   agentSession.busy = true;
+  showToast(`正在调用 AI 整体修改${agentFormatLabel(format)}`);
   renderAgentMessages();
   try {
     await applyMaterialRefine(format, instruction);

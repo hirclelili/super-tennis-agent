@@ -5300,8 +5300,13 @@ function formatSpecFor(format, brief = {}) {
   } else if (formatType === "xhs_image") {
     const isShowcase = SHOWCASE_CATEGORY_IDS.has(String(brief.contentType || ""));
     spec.constraints.push(
-      "小红书图文：titles 给 3-5 个备选标题；tags 不要带 # 号，3-6 个、含本地/品类/场景词；body 是搭配发布的一整段正文（辅助），主内容放在图上。",
-      "cover 是封面文案：headline 为封面大字强钩子（决定点击），subline 为副文案/痛点补充；不要写成排版/字体说明，只写文字内容。",
+      "小红书图文不是科普文章，也不是 PPT。核心不是解释「网球为什么好」，而是复现家长的真实决策瞬间：原来我也有这个困惑、这个观点以前没人这么说、说的就是我。",
+      "内容视角必须先讲家长，再讲网球；先写犹豫/选择/担心，再给判断方式。不要一上来介绍项目优势。",
+      "titles 给 4-6 个备选标题，至少包含：家长共鸣型、决策瞬间型、反常识型、讨论型。标题要像小红书用户会点开的自然句，不要写成论文题或机构宣传语。",
+      "标题避免「为什么会考虑网球」「网球适不适合」这类平铺直叙句；优先使用「很多家长最后都会...」「给孩子选运动时...」「不是因为...而是...」「看完篮球/游泳/羽毛球后...」这类有情境的表达。",
+      "cover 是封面文案：headline 控制为 1-2 行短句，每行尽量 8-12 个字；要有停留理由。subline 只补一个具体痛点，不要长句，不要写成排版说明。",
+      "body 正文必须按小红书阅读节奏：开头先写家长场景/困惑，中段给判断框架，结尾轻转化。不要整篇一直解释网球，不要像百科或课程介绍。",
+      "tags 不要带 # 号，3-6 个、含本地/品类/场景词；commentGuide 要引导家长说孩子年龄、性格或最纠结的点。",
       "必须输出 visualPlan。visualPlan 不是颜色自适应，而是你基于文案重新设计的一组版式方案：判断这篇更适合问答卡、步骤卡、误区对比、教练笔记还是真实场地记录，再为封面、每张内容图、结尾页分别选择 layout。",
       "visualPlan.pages 要覆盖封面、每张 imageContents/shotList、结尾 CTA；layout 只能从 requiredShape 给出的枚举里选。badge/highlight 写可上图的小标签或强调点，不要写设计说明。",
     );
@@ -5315,8 +5320,10 @@ function formatSpecFor(format, brief = {}) {
       delete spec.requiredShape.material.imageContents;
     } else {
       spec.constraints.push(
-        "本选题是科普/观点类：小红书「图片即内容」，主内容写在每张图上。请填 imageContents：每项 heading=这张图的小标题，lines=该图要讲清的要点（2-4 条，信息密度高、具体可信、不空泛）。",
-        "imageContents 建议 4-8 张图，每张只讲透一个点，整体覆盖 brief 的 keyPoints；cover.headline 要强钩子。",
+        "本选题是科普/观点类：小红书「图片即内容」，但每页不是 PPT 小标题 + bullet。请填 imageContents：heading 是一句有观点的短句；lines 是 2-4 句自然短句，像在帮家长判断，不要写成干巴巴清单。",
+        "imageContents 建议 4-7 张图，每页只讲透一个判断点；允许使用「不是...而是...」「真正影响的是...」「先看这三个问题」这类小红书表达。",
+        "每页要减少说教感，增加代入感；不要反复说规则清晰、路径清楚，要把它翻译成家长能感受到的选择理由。",
+        "cover.headline 要强钩子，不能超过两行；正文和图文都要覆盖 brief 的 keyPoints，但必须改写成家长决策语言。",
         "不要输出 shotList。",
       );
       // 科普/观点类只要 imageContents，删掉 shotList 以免模型误填。
@@ -5337,6 +5344,31 @@ function formatSpecFor(format, brief = {}) {
 function topicContentMessages(profile, task, topic, format, fallbackMaterial) {
   const brief = buildContentBrief(profile, topic, task);
   const spec = formatSpecFor(format, brief);
+  const xhsStyleReference = format === "xhs_image" ? {
+    titlePatterns: [
+      "为什么越来越多广州家长，最后都会把网球放进备选？",
+      "篮球、游泳、羽毛球都看过，为什么最后又去看了网球？",
+      "给孩子选运动时，真正重要的不是项目名气",
+      "不是网球最好，而是它适合很多孩子先体验",
+    ],
+    coverPatterns: [
+      "为什么越来越多家长\n会把网球放进备选？",
+      "孩子第一项运动\n为什么很多人看网球？",
+      "不是网球最好\n而是先看孩子适不适合",
+    ],
+    pageWriting: [
+      "每页用一句观点切入，不要写成 PPT 目录。",
+      "每页 2-4 句短句，少用抽象词，多写家长能观察到的状态。",
+      "多用决策语言：先看孩子愿不愿意、有没有成就感、家庭能不能长期安排。",
+      "不要做项目优劣排名；用「适合谁 / 不适合谁 / 先体验再判断」降低广告感。",
+    ],
+    bodyFlow: [
+      "开头：家长给孩子选运动时的纠结场景。",
+      "中段：不是哪个项目更高级，而是孩子是否愿意持续参与。",
+      "展开：网球的特点要翻译成家长能理解的体验理由。",
+      "结尾：先体验、先观察，不急着报名。",
+    ],
+  } : null;
   return [
     {
       role: "system",
@@ -5371,6 +5403,7 @@ function topicContentMessages(profile, task, topic, format, fallbackMaterial) {
           format,
           formatLabel: spec.formatLabel,
         },
+        platformStyleReference: xhsStyleReference,
         referenceStructure: (topic.source === "reference" && Array.isArray(topic.structure)) ? topic.structure : null,
         requiredShape: spec.requiredShape,
         constraints: [
@@ -5390,6 +5423,19 @@ function topicContentMessages(profile, task, topic, format, fallbackMaterial) {
 function contentRefineMessages(profile, task, topic, format, currentMaterial, instruction, fallbackMaterial) {
   const brief = buildContentBrief(profile, topic, task);
   const spec = formatSpecFor(format, brief);
+  const xhsRewriteGuide = format === "xhs_image" ? {
+    diagnosis: [
+      "如果用户说生硬、不够吸引、太像科普、广告感强，默认不是小修，而是重写标题、封面、每页图内容和正文开头。",
+      "优先把内容从「解释网球」改成「帮家长做选择」。",
+      "减少 PPT 式 bullet，改成小红书式观点短句。",
+    ],
+    rewriteTargets: [
+      "标题要制造家长决策瞬间，而不是陈述主题。",
+      "封面必须短，1-2 行，能让家长停下来。",
+      "每页图内容要像一句观点 + 2-4 句解释。",
+      "正文开头先写家长纠结，再写判断框架，最后轻转化。",
+    ],
+  } : null;
   return [
     {
       role: "system",
@@ -5417,10 +5463,12 @@ function contentRefineMessages(profile, task, topic, format, currentMaterial, in
         instruction: String(instruction || "").slice(0, 400),
         currentMaterial,
         currentText: String(task.currentText || "").slice(0, 8000),
+        platformRewriteGuide: xhsRewriteGuide,
         requiredShape: spec.requiredShape,
         constraints: [
           ...spec.constraints,
           "严格遵循用户 instruction；如果 instruction 明确要求整篇/整体/全文/重写/换风格，就按 requiredShape 生成一版完整新 material，并覆盖封面、图上文字、正文、标签等相关字段。",
+          format === "xhs_image" ? "小红书整篇修改时，不能只同义词替换。必须实质性改标题、封面、imageContents、body，使它更像家长会收藏/评论的小红书内容。" : null,
           "如果 instruction 只是局部调整，则指令没提到的字段保持原样或仅做必要润色。",
           task.currentText ? "currentText 是用户当前在前端看到/编辑过的全文；整体重写时要参考 currentText 的信息，不要只看旧 JSON 字段。" : null,
         ].filter(Boolean),
