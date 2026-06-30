@@ -4266,6 +4266,7 @@ async function sendAgentMessage() {
   els.agentInput.value = "";
   autoGrowAgentInput();
   pushAgentMessage("user", text);
+  if (shouldPrioritizeContentIntent(text) && routeContentIntent(text)) return;
   if (activeResultData() && routeAgentIntent(text)) return;
   if (isCampaignRequest(text)) {
     await agentGenerateCampaign(text);
@@ -4658,11 +4659,36 @@ function contentFormatFromText(text) {
   return null;
 }
 
+function activeMaterialFormat(fallbackText = "") {
+  const explicit = contentFormatFromText(fallbackText);
+  if (explicit && generatedMaterials[explicit]) return explicit;
+  if (agentSession.activeFormat && generatedMaterials[agentSession.activeFormat]) return agentSession.activeFormat;
+  const formats = Object.keys(generatedMaterials);
+  return formats[0] || explicit || agentSession.activeFormat || null;
+}
+
+function isContentRefineRequest(text) {
+  return /(整篇|整体|全文|全部|通篇|这一篇|这篇|这个图文|这版|再来一版|换一版|重新写|重写一版|改短|改长|短一点|长一点|精简|压缩|口语|正式|温和|真实|自然|小红书感|广告感|开头|结尾|标题|钩子|换个?说法|换一种|加一?句|加个|删掉|去掉|润色|优化|改写|重写|改一下|改改|修改|调整|再软|再硬|更具体|具体一点|换标题|不行|不好|太硬|太广告|不像)/.test(text);
+}
+
+function shouldPrioritizeContentIntent(text) {
+  return activeView === "content"
+    && currentTopic
+    && Object.keys(generatedMaterials).length > 0
+    && (isContentRefineRequest(text) || Boolean(activeSelectedMaterial(activeMaterialFormat(text))));
+}
+
 function routeContentIntent(text) {
   const explicitFmt = contentFormatFromText(text);
-  const fmt = explicitFmt || agentSession.activeFormat;
+  const fmt = activeMaterialFormat(text);
+  const isRefine = isContentRefineRequest(text) || Boolean(fmt && activeSelectedMaterial(fmt));
 
-  if (explicitFmt && /(生成|做成|做一个|做个|做一份|出一?[个版份]|来个|来一[版份]|换成|改成|再做|也做)/.test(text)) {
+  if (isRefine && fmt && generatedMaterials[fmt]) {
+    agentRefineMaterial(fmt, text);
+    return true;
+  }
+
+  if (explicitFmt && /(生成|做成|做一个|做个|做一份|出一?[个版份]|来个|来一[版份]|再做|也做)/.test(text)) {
     pushAgentMessage("assistant", `好的，正在生成${agentFormatLabel(explicitFmt)}，详细结果看主面板。`);
     generateMaterial(explicitFmt);
     return true;
@@ -4685,14 +4711,6 @@ function routeContentIntent(text) {
     } else {
       pushAgentMessage("assistant", "没有可撤销的历史版本。");
     }
-    return true;
-  }
-  if (fmt && activeSelectedMaterial(fmt)) {
-    agentRefineMaterial(fmt, text);
-    return true;
-  }
-  if (/(整篇|整体|全文|全部|通篇|这一篇|这篇|这个图文|这版|再来一版|换一版|重新写|重写一版|改短|改长|短一点|长一点|精简|压缩|口语|正式|温和|真实|自然|小红书感|广告感|开头|结尾|标题|钩子|换个?说法|换一种|加一?句|加个|删掉|去掉|润色|优化|改写|重写|改一下|改改|修改|调整|再软|再硬|更具体|具体一点|换标题)/.test(text)) {
-    agentRefineMaterial(fmt, text);
     return true;
   }
   return false;
@@ -5950,11 +5968,17 @@ async function agentRefineMaterial(format, instruction) {
 
 async function applyAiWholeMaterialRefine(format, instruction) {
   if (!format || !generatedMaterials[format] || !currentTopic) return;
+  const beforeText = entryText(generatedMaterials[format]).trim();
   agentSession.busy = true;
   renderAgentMessages();
   try {
     await applyMaterialRefine(format, instruction);
+    const afterText = entryText(generatedMaterials[format]).trim();
     agentSession.busy = false;
+    if (!afterText || afterText === beforeText) {
+      pushAgentMessage("assistant", `这次 AI 返回后内容没有明显变化，我没有把它当成有效修改。你可以换一个更具体的要求，比如「重写标题和每页图上文字，少一点广告感」。`);
+      return;
+    }
     pushAgentMessage("assistant", `已按你的要求整体修改${agentFormatLabel(format)}，主面板已更新。`);
     syncLatestCardSnapshot();
   } catch (error) {
