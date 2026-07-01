@@ -528,7 +528,15 @@ function materialToText(m) {
       });
       lines.push("");
     }
-    lines.push("【正文】", m.body || "", "", `标签：${(m.tags || []).map((t) => `#${t}`).join(" ")}`, m.commentGuide || "");
+    lines.push(
+      "【正文】",
+      m.body || "",
+      "",
+      `标签：${(m.tags || []).map((t) => `#${t}`).join(" ")}`,
+      "",
+      "【评论引导语】",
+      m.commentGuide || "",
+    );
     return lines.join("\n");
   }
   if (m.type === "moments_text") {
@@ -662,6 +670,8 @@ function xhsPublishPages(material) {
 }
 
 function renderXhsTemplatePreview(material) {
+  void material;
+  return "";
   const pages = xhsPublishPages(material);
   if (!pages.length) return "";
   const brand = brandSettings();
@@ -672,10 +682,10 @@ function renderXhsTemplatePreview(material) {
     <section class="xhs-template-pack" data-xhs-pack>
       <div class="xhs-template-head">
         <div>
-          <h4>AI 版式图文预览</h4>
-          <small>按文案重新生成封面、内容页和结尾页版式，每页自动带 Logo</small>
+          <h4></h4>
+          <small></small>
         </div>
-        <button class="secondary" data-xhs-export="all" type="button">导出 PNG</button>
+        <button class="secondary" type="button"></button>
       </div>
       <div class="xhs-template-grid">
         ${pages.map((page, index) => `
@@ -1819,6 +1829,7 @@ function renderXhs(material) {
       <h4>正文</h4>
       <pre>${escapeHtml(material.body)}</pre>
       ${renderPills((material.tags || []).map((tag) => `#${tag}`))}
+      <h4>评论引导语</h4>
       <div class="note-box">${escapeHtml(material.commentGuide)}</div>
     </article>
   `;
@@ -1920,7 +1931,6 @@ function renderMaterialBlock(format, entry) {
   const meta = materialTypeMeta(format);
   const isFinal = entry.status === "final";
   const history = Array.isArray(entry.history) ? entry.history : [];
-  const templatePreview = format === "xhs_image" ? renderXhsTemplatePreview(entry.material) : "";
   const bodyHtml = `<article class="content-card edited-material"><pre>${escapeHtml(entryText(entry))}</pre></article>`;
   return `
     <div class="material-block ${isFinal ? "is-final" : ""}" data-format-block="${escapeHtml(format)}">
@@ -1934,7 +1944,6 @@ function renderMaterialBlock(format, entry) {
           <button class="${isFinal ? "secondary" : "primary"} material-finalize" data-format="${escapeHtml(format)}" type="button">${isFinal ? "取消定稿" : "定稿"}</button>
         </div>
       </div>
-      ${templatePreview}
       <div class="material-editable" data-material-editable="${escapeHtml(format)}" contenteditable="true" spellcheck="false">${bodyHtml}</div>
       ${renderMaterialAiMeta(entry.aiMeta)}
       <div class="material-refine">
@@ -6317,8 +6326,6 @@ els.topicsView.addEventListener("change", (event) => {
 });
 
 els.contentView.addEventListener("click", (event) => {
-  const xhsExport = event.target.closest("[data-xhs-export]");
-  if (xhsExport) { exportXhsPages(); return; }
   const selectionApply = event.target.closest("[data-selection-apply]");
   if (selectionApply) {
     const format = selectionApply.dataset.selectionApply;

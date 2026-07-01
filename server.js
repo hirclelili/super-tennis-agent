@@ -135,6 +135,161 @@ const formatLabels = {
   community: "社群运营",
 };
 
+const xhsSensitiveReplacements = [
+  ["加微信", "留言"],
+  ["加我微信", "留言"],
+  ["加VX", "留言"],
+  ["加vx", "留言"],
+  ["加 V", "留言"],
+  ["加V", "留言"],
+  ["私信我", "留言"],
+  ["私聊我", "留言"],
+  ["戳我", "留言"],
+  ["私我", "留言"],
+  ["进微信群", "参与交流"],
+  ["进群", "参与交流"],
+  ["微信群", "社群"],
+  ["点击链接", "查看入口"],
+  ["主页联系方式", "主页信息"],
+  ["淘宝搜", "平台搜索"],
+  ["全网第一", "口碑不错"],
+  ["最受欢迎", "很多人会关注"],
+  ["错过不再有", "可以先了解"],
+  ["再不抢就没了", "感兴趣可以提前了解"],
+  ["万人疯抢", "关注度较高"],
+  ["限时特价", "阶段性安排"],
+  ["全民免单", "体验安排"],
+  ["点击有惊喜", "可以留言了解"],
+  ["点击获取", "可以留言了解"],
+  ["领取奖品", "了解活动信息"],
+  ["无效退款", "具体规则以实际说明为准"],
+  ["零风险", "先了解再决定"],
+  ["国家推荐", "不少家庭会关注"],
+  ["机关专供", "特定渠道"],
+  ["中国驰名商标", "品牌认知度不错"],
+  ["专家推荐", "教练视角建议"],
+  ["医生推荐", "专业人士建议"],
+  ["领导人推荐", "公开信息提到"],
+  ["保本", "风险相对可控"],
+  ["稳赚", "收益不确定"],
+  ["无风险", "需自行判断风险"],
+  ["高收益", "收益空间"],
+  ["高回报", "回报空间"],
+  ["投资必赚", "投资需谨慎"],
+  ["被动收入", "长期收益"],
+  ["祛斑", "淡化瑕疵"],
+  ["美白", "提亮"],
+  ["祛痘", "改善痘痘困扰"],
+  ["抗衰", "关注状态维护"],
+  ["消炎", "舒缓"],
+  ["杀菌", "清洁"],
+  ["修复", "改善"],
+  ["医疗级", "专业感"],
+  ["医美级", "精细护理"],
+  ["药用", "护理"],
+  ["根治", "改善"],
+  ["治愈", "缓解"],
+  ["防癌", "健康管理"],
+  ["抗癌", "健康管理"],
+  ["降压", "健康管理"],
+  ["降糖", "健康管理"],
+  ["减肥", "体态管理"],
+  ["瘦身", "体态管理"],
+  ["养胃", "饮食照顾"],
+  ["增强免疫力", "帮助保持状态"],
+  ["临床验证", "有相关依据"],
+  ["无副作用", "体验因人而异"],
+  ["药到病除", "逐步改善"],
+  ["强效", "效果更明显"],
+  ["速效", "反馈较快"],
+  ["特效", "针对性较强"],
+  ["秒杀", "活动价"],
+  ["抢爆", "关注度较高"],
+  ["抢疯了", "关注度较高"],
+  ["点击领奖", "了解活动信息"],
+  ["恭喜获奖", "活动通知"],
+  ["一键三连", "欢迎互动"],
+  ["保证", "尽量"],
+  ["立竿见影", "逐步看到变化"],
+  ["纯天然", "自然感"],
+  ["超赚", "比较划算"],
+  ["精准", "更有针对性"],
+  ["vx", "留言"],
+  ["VX", "留言"],
+  ["微信", "官方渠道"],
+  ["QQ", "留言"],
+  ["私信", "留言"],
+  ["私聊", "留言"],
+  ["链接", "入口"],
+  ["代购", "购买"],
+  ["同号", "同名账号"],
+  ["老地方见", "主页信息"],
+  ["某宝", "平台"],
+  ["某信", "官方渠道"],
+  ["某音", "短视频平台"],
+  ["绿色软件", "官方渠道"],
+  ["招财", "好彩头"],
+  ["旺运", "好彩头"],
+  ["化解小人", "减少困扰"],
+  ["逢凶化吉", "顺利一些"],
+  ["护身", "陪伴感"],
+  ["提升运势", "带来积极感受"],
+  ["旺人旺财", "好彩头"],
+  ["增强第六感", "增强感知"],
+  ["时来运转", "状态变好"],
+  ["万事亨通", "顺利"],
+  ["区块链", "新技术"],
+  ["虚拟货币", "数字资产"],
+  ["NO.1", "口碑不错"],
+  ["No.1", "口碑不错"],
+  ["no.1", "口碑不错"],
+  ["最佳", "比较合适"],
+  ["最高", "较高"],
+  ["最低", "较低"],
+  ["最火", "关注度较高"],
+  ["唯一", "比较特别"],
+  ["顶级", "质感高级"],
+  ["极致", "很细致"],
+  ["完美", "完成度较高"],
+  ["永久", "长期"],
+  ["100%", "比较"],
+  ["万能", "适用面较广"],
+  ["零瑕疵", "细节不错"],
+  ["彻底", "比较充分"],
+  ["史无前例", "少见"],
+  ["天花板", "水平不错"],
+  ["鼻祖", "早期代表"],
+  ["独家", "特色"],
+  ["仅此一次", "阶段性"],
+  ["国家级", "专业"],
+  ["世界级", "专业"],
+  ["国际级", "专业"],
+  ["宇宙级", "专业"],
+  ["特级", "高规格"],
+  ["千万级", "规模较大"],
+  ["领袖品牌", "品牌认知度不错"],
+  ["遥遥领先", "表现突出"],
+];
+
+function xhsCompliancePolicy() {
+  return {
+    rule: "小红书图文与后续修改都要避开极限承诺、医疗功效、过度营销、导流、权威背书、玄学和金融收益承诺类表达。",
+    avoidExamples: [
+      "最/最佳/最高/最低/最火/全网第一/唯一/顶级/完美/100%/万能/根治/天花板/独家/国家级/世界级",
+      "祛斑/美白/祛痘/抗衰/消炎/杀菌/医疗级/医美级/治愈/减肥/增强免疫力/无副作用/特效/速效",
+      "秒杀/抢爆/再不抢就没了/限时特价/点击领奖/无效退款/零风险/保证/立竿见影/精准",
+      "加 V/vx/微信/QQ/戳我/私我/私信/进群/链接/淘宝搜/老地方见/某信/某音",
+      "国家推荐/专家推荐/医生推荐/招财/旺运/稳赚/保本/高收益/投资必赚/躺赚",
+    ],
+    replacements: [
+      "把「最」类绝对表达改成「更」「比较」「不少人会」「很多家庭会关注」。",
+      "把「保证/立竿见影」改成「可以先体验/先观察/以实际安排为准」。",
+      "把「私信/加微信/进群」改成「留言说说孩子年龄和纠结点」「评论区交流」。",
+      "涉及训练效果只说体验、参与状态、兴趣、节奏，不承诺成绩、升学、疗效或长期效果。",
+    ],
+  };
+}
+
 const pillarDefinitions = {
   awareness: {
     label: "认知与场地",
@@ -1498,6 +1653,40 @@ function firstAvailable(...values) {
     if (text) return text;
   }
   return "";
+}
+
+function sanitizeXhsText(value) {
+  let text = String(value ?? "");
+  if (!text) return text;
+  for (const [target, replacement] of xhsSensitiveReplacements) {
+    text = text.split(target).join(replacement);
+  }
+  return text
+    .replace(/最近/g, "这段时间")
+    .replace(/最开始/g, "一开始")
+    .replace(/最初/g, "一开始")
+    .replace(/最终/g, "后来")
+    .replace(/最后/g, "结尾")
+    .replace(/最晚/g, "较晚")
+    .replace(/最早/g, "较早")
+    .replace(/最多/g, "较多")
+    .replace(/最少/g, "较少")
+    .replace(/最(好|适合|重要|容易|直接|快|高|低|划算|火|受欢迎|核心|关键|值得|应该|推荐|舒服|稳|安全|专业|有效|强|靠谱|真实|该|常|怕|想|担心|纠结|关心|在意|难|简单|合适|自然|像|有用|吸引人)/g, "更$1")
+    .replace(/最/g, "更");
+}
+
+function sanitizeXhsValue(value) {
+  if (typeof value === "string") return sanitizeXhsText(value);
+  if (Array.isArray(value)) return value.map((item) => sanitizeXhsValue(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizeXhsValue(item)]));
+  }
+  return value;
+}
+
+function sanitizeXhsMaterial(material) {
+  if (!material || material.type !== "xhs_image") return material;
+  return sanitizeXhsValue(material);
 }
 
 function inferPrimaryGoal(task = {}) {
@@ -4966,7 +5155,7 @@ function buildVideoMaterial(profile, topic) {
       "字幕用口播重点短句，不另写一套意思",
       `目标口播字数 ${policy.narrationCharRange[0]}-${policy.narrationCharRange[1]} 字`,
       "前 3 秒必须出现球场或问题",
-      "结尾放私信/进群动作",
+      "结尾放评论或预约了解动作",
     ],
     publishCopy: `${title}\n\n${topic.purpose}\n\n${topic.suggestedCta || topic.cta}`,
   };
@@ -4979,38 +5168,65 @@ function buildVideoMaterial(profile, topic) {
 function buildXhsImageMaterial(profile, topic) {
   const isShowcase = SHOWCASE_CATEGORY_IDS.has(String(topic.contentType || ""));
   const structure = Array.isArray(topic.structure) && topic.structure.length ? topic.structure : ["真实场地", "训练画面", "适合人群", "咨询入口"];
+  const city = profile.city || "广州";
+  const venue = profile.shortName || profile.name || "这个网球场";
   const cover = {
-    headline: topic.title,
-    subline: isShowcase ? "真实记录，给你看看实际的样子" : `这篇主要解决：${topic.purpose}`,
+    headline: isShowcase ? `${venue}真实场地\n先带你看看` : "孩子选运动\n可以先看看网球",
+    subline: isShowcase ? "先看环境，再决定要不要来体验" : "先体验，再判断适不适合",
   };
   const base = {
     type: "xhs_image",
     titles: [
-      `${profile.city || "广州"}想打网球，先收藏这篇`,
+      `给孩子选运动时，很多${city}家长会把网球放进备选`,
+      "篮球、游泳、羽毛球都看过，也可以再看看网球",
+      "孩子适不适合网球，先看这几个状态",
+      "不急着报名，先看孩子在球场上的反应",
       topic.title,
-      `${profile.shortName || "这个网球场"}适合谁先来看看？`,
     ],
     cover,
     imageContents: [],
     shotList: [],
     body: [
-      `${topic.title}`,
+      "很多家长给孩子选运动时，都会在篮球、游泳、羽毛球和网球之间犹豫。",
       "",
-      isShowcase ? `这组图是真实记录，配文搭配实拍看。` : `这篇主要想解决：${topic.purpose}。`,
+      isShowcase
+        ? `这组图先带你看看${venue}的真实环境。比起听介绍，先看孩子在球场上的状态会更直观。`
+        : `真正需要判断的，不是哪个项目更高级，而是孩子愿不愿意参与、有没有一点成就感、家庭节奏能不能持续安排。`,
       "",
-      `目前信息以球场实际同步为准，不编造效果和案例。`,
-      `${topic.suggestedCta || topic.cta}`,
+      "网球的特点是反馈比较直接，孩子能从击球和来回球里感受到参与感。但它也不是适合每个孩子，还是建议先体验、先观察，再慢慢决定。",
+      "",
+      `${venue}目前提供青少年及成人网球相关服务，具体安排以球场实际同步为准。`,
     ].join("\n"),
-    tags: ["广州网球", "网球新手", "亲子运动", "周末运动", profile.shortName || "网球场"].filter(Boolean),
-    commentGuide: "你第一次来网球场最担心什么？可以评论区问我。",
-    visualPlan: buildXhsVisualPlan(profile, topic, { isShowcase, structure }),
+    tags: [`${city}网球`, "少儿网球", "亲子运动", "青少年运动", venue].filter(Boolean),
+    commentGuide: "你初次来网球场会担心什么？可以在评论区说说孩子年龄和你的纠结点。",
   };
   if (isShowcase) {
     base.shotList = structure.map((item) => ({ shot: `实拍：${item}`, caption: item }));
   } else {
-    base.imageContents = structure.map((item) => ({ heading: item, lines: [`围绕「${item}」讲清楚关键的一点，具体、不夸大。`] }));
+    base.imageContents = [
+      {
+        heading: "很多家长会把网球放进备选",
+        lines: ["不是因为它更高级。", "而是孩子能不能参与、愿不愿意继续，比较容易在体验里观察到。"],
+      },
+      {
+        heading: "每项运动适合的孩子不一样",
+        lines: ["喜欢同伴互动，可以多看团队类项目。", "喜欢专注和反复练习，也可以试试网球的节奏。"],
+      },
+      {
+        heading: "真正影响坚持的是孩子状态",
+        lines: ["有没有兴趣。", "有没有一点成就感。", "下一次还愿不愿意走进球场。"],
+      },
+      {
+        heading: "选运动先看三个问题",
+        lines: ["孩子性格。", "家庭时间能否稳定安排。", "体验后的真实反应。"],
+      },
+      {
+        heading: "先体验，再慢慢决定",
+        lines: ["不急着比较，也不急着报名。", "先看孩子在球场上的状态，会更容易判断。"],
+      },
+    ];
   }
-  return base;
+  return sanitizeXhsMaterial(base);
 }
 
 function buildXhsVisualPlan(profile, topic, options = {}) {
@@ -5192,13 +5408,6 @@ function materialShapeForFormat(format) {
       type: "xhs_image",
       titles: ["string"],
       cover: { headline: "string", subline: "string" },
-      visualPlan: {
-        theme: "question_cards|starter_steps|myth_vs_truth|coach_notes|real_court_story",
-        coverLayout: "big_hook|question_stamp|photo_lead",
-        mood: "string",
-        accent: "string",
-        pages: [{ role: "cover|content|cta", layout: "big_hook|question_stamp|checklist|steps|contrast|myth_fact|answer_card|coach_note|stat_callout|quote_card|photo_caption|scene_detail|timeline|save_share", badge: "string", highlight: "string" }],
-      },
       imageContents: [{ heading: "string", lines: ["string"] }],
       shotList: [{ shot: "string", caption: "string" }],
       body: "string",
@@ -5303,12 +5512,11 @@ function formatSpecFor(format, brief = {}) {
       "小红书图文不是科普文章，也不是 PPT。核心不是解释「网球为什么好」，而是复现家长的真实决策瞬间：原来我也有这个困惑、这个观点以前没人这么说、说的就是我。",
       "内容视角必须先讲家长，再讲网球；先写犹豫/选择/担心，再给判断方式。不要一上来介绍项目优势。",
       "titles 给 4-6 个备选标题，至少包含：家长共鸣型、决策瞬间型、反常识型、讨论型。标题要像小红书用户会点开的自然句，不要写成论文题或机构宣传语。",
-      "标题避免「为什么会考虑网球」「网球适不适合」这类平铺直叙句；优先使用「很多家长最后都会...」「给孩子选运动时...」「不是因为...而是...」「看完篮球/游泳/羽毛球后...」这类有情境的表达。",
+      "标题避免「为什么会考虑网球」「网球适不适合」这类平铺直叙句；优先使用「很多家长后来都会...」「给孩子选运动时...」「不是因为...而是...」「看完篮球/游泳/羽毛球后...」这类有情境的表达。",
       "cover 是封面文案：headline 控制为 1-2 行短句，每行尽量 8-12 个字；要有停留理由。subline 只补一个具体痛点，不要长句，不要写成排版说明。",
       "body 正文必须按小红书阅读节奏：开头先写家长场景/困惑，中段给判断框架，结尾轻转化。不要整篇一直解释网球，不要像百科或课程介绍。",
-      "tags 不要带 # 号，3-6 个、含本地/品类/场景词；commentGuide 要引导家长说孩子年龄、性格或最纠结的点。",
-      "必须输出 visualPlan。visualPlan 不是颜色自适应，而是你基于文案重新设计的一组版式方案：判断这篇更适合问答卡、步骤卡、误区对比、教练笔记还是真实场地记录，再为封面、每张内容图、结尾页分别选择 layout。",
-      "visualPlan.pages 要覆盖封面、每张 imageContents/shotList、结尾 CTA；layout 只能从 requiredShape 给出的枚举里选。badge/highlight 写可上图的小标签或强调点，不要写设计说明。",
+      "commentGuide 是正文之外单独输出的评论引导语，必须自然引导家长在评论区说孩子年龄、性格或比较纠结的点；不要写私信、加联系方式、进群、点链接。",
+      "tags 不要带 # 号，3-6 个、含本地/品类/场景词；所有标题、封面、图上文字、正文、标签、评论引导都要避开 compliancePolicy 中的敏感表达。",
     );
     if (isShowcase) {
       spec.constraints.push(
@@ -5323,7 +5531,8 @@ function formatSpecFor(format, brief = {}) {
         "本选题是科普/观点类：小红书「图片即内容」，但每页不是 PPT 小标题 + bullet。请填 imageContents：heading 是一句有观点的短句；lines 是 2-4 句自然短句，像在帮家长判断，不要写成干巴巴清单。",
         "imageContents 建议 4-7 张图，每页只讲透一个判断点；允许使用「不是...而是...」「真正影响的是...」「先看这三个问题」这类小红书表达。",
         "每页要减少说教感，增加代入感；不要反复说规则清晰、路径清楚，要把它翻译成家长能感受到的选择理由。",
-        "cover.headline 要强钩子，不能超过两行；正文和图文都要覆盖 brief 的 keyPoints，但必须改写成家长决策语言。",
+        "cover.headline 要有钩子，不能超过两行；正文和图文都要覆盖 brief 的 keyPoints，但必须改写成家长决策语言。",
+        "优先输出「家长正在犹豫的场景 -> 不做项目优劣排名 -> 给观察孩子的方法 -> 建议先体验再判断」这条逻辑，不要写成网球优势清单。",
         "不要输出 shotList。",
       );
       // 科普/观点类只要 imageContents，删掉 shotList 以免模型误填。
@@ -5346,15 +5555,15 @@ function topicContentMessages(profile, task, topic, format, fallbackMaterial) {
   const spec = formatSpecFor(format, brief);
   const xhsStyleReference = format === "xhs_image" ? {
     titlePatterns: [
-      "为什么越来越多广州家长，最后都会把网球放进备选？",
-      "篮球、游泳、羽毛球都看过，为什么最后又去看了网球？",
-      "给孩子选运动时，真正重要的不是项目名气",
-      "不是网球最好，而是它适合很多孩子先体验",
+      "为什么越来越多广州家长，后来都会把网球放进备选？",
+      "篮球、游泳、羽毛球都看过，为什么后来又去看了网球？",
+      "给孩子选运动时，真正要看的不是项目名气",
+      "不是网球更高级，而是孩子适不适合先体验",
     ],
     coverPatterns: [
       "为什么越来越多家长\n会把网球放进备选？",
-      "孩子第一项运动\n为什么很多人看网球？",
-      "不是网球最好\n而是先看孩子适不适合",
+      "孩子刚开始选运动\n为什么很多人看网球？",
+      "不是网球更高级\n而是先看孩子适不适合",
     ],
     pageWriting: [
       "每页用一句观点切入，不要写成 PPT 目录。",
@@ -5376,9 +5585,10 @@ function topicContentMessages(profile, task, topic, format, fallbackMaterial) {
         "你是网球场内容运营写手，为单个选题生成可直接使用的发布物料。",
         "必须基于球场档案、内容 brief 和（如有）排期平台要求写作。",
         "语气真实、克制、专业但不端着；不编造价格、开放时间、学员案例、爆满现场或效果承诺。",
+        format === "xhs_image" ? "小红书图文必须避开极限绝对、医疗功效、过度营销、导流、权威背书、玄学、金融收益承诺类表达；评论引导只能引导留言/评论，不要引导加联系方式或进群。" : null,
         "输出必须是严格 JSON，不要 Markdown，不要解释。",
         "只返回一个 material 对象。",
-      ].join("\n"),
+      ].filter(Boolean).join("\n"),
     },
     {
       role: "user",
@@ -5404,6 +5614,7 @@ function topicContentMessages(profile, task, topic, format, fallbackMaterial) {
           formatLabel: spec.formatLabel,
         },
         platformStyleReference: xhsStyleReference,
+        compliancePolicy: format === "xhs_image" ? xhsCompliancePolicy() : null,
         referenceStructure: (topic.source === "reference" && Array.isArray(topic.structure)) ? topic.structure : null,
         requiredShape: spec.requiredShape,
         constraints: [
@@ -5411,7 +5622,7 @@ function topicContentMessages(profile, task, topic, format, fallbackMaterial) {
           brief.planSlot ? `这是 ${brief.planSlot.day} 排期，平台 ${brief.planSlot.platform}，请按该平台调整表达。` : "未提供排期，按选题默认平台习惯写。",
           brief.parentQuestion ? `这条选题要回答家长的问题：「${brief.parentQuestion}」，全文围绕家长视角，不要写成成人自练或球友角度。` : null,
           brief.contentGoal ? `内容目标是「${brief.contentGoal}」，表达克制、不承诺效果或升学、不贴阶层标签。` : null,
-          topic.source === "reference" ? "本选题来自参考改写：信息顺序对齐 referenceStructure，但文案必须 100% 本地化，禁止复用参考原文、对方品牌名或未经证实的数据。" : null,
+          topic.source === "reference" ? "本选题来自参考改写：信息顺序对齐 referenceStructure，但文案必须完全本地化，禁止复用参考原文、对方品牌名或未经证实的数据。" : null,
         ].filter(Boolean),
         localExample: fallbackMaterial,
       }),
@@ -5433,7 +5644,7 @@ function contentRefineMessages(profile, task, topic, format, currentMaterial, in
       "标题要制造家长决策瞬间，而不是陈述主题。",
       "封面必须短，1-2 行，能让家长停下来。",
       "每页图内容要像一句观点 + 2-4 句解释。",
-      "正文开头先写家长纠结，再写判断框架，最后轻转化。",
+      "正文开头先写家长纠结，再写判断框架，结尾轻转化。",
     ],
   } : null;
   return [
@@ -5444,8 +5655,9 @@ function contentRefineMessages(profile, task, topic, format, currentMaterial, in
         "如果用户要求整篇、整体、全文、重写一版、换风格，你可以重构完整内容；否则只按指令改动需要改的部分，其余内容尽量保留。",
         "无论局部还是整体修改，都必须保持完全相同的 JSON 结构。",
         "不编造价格、开放时间、学员案例、爆满现场或效果承诺；语气真实克制。",
+        format === "xhs_image" ? "小红书修改必须同步做违禁词避雷：避开极限绝对、医疗功效、过度营销、导流、权威背书、玄学、金融收益承诺；不要把留言引导改成私信、加联系方式或进群。" : null,
         "输出必须是严格 JSON，不要 Markdown，不要解释。只返回一个 material 对象。",
-      ].join("\n"),
+      ].filter(Boolean).join("\n"),
     },
     {
       role: "user",
@@ -5464,6 +5676,7 @@ function contentRefineMessages(profile, task, topic, format, currentMaterial, in
         currentMaterial,
         currentText: String(task.currentText || "").slice(0, 8000),
         platformRewriteGuide: xhsRewriteGuide,
+        compliancePolicy: format === "xhs_image" ? xhsCompliancePolicy() : null,
         requiredShape: spec.requiredShape,
         constraints: [
           ...spec.constraints,
@@ -5491,8 +5704,9 @@ function selectionRefineMessages(profile, task, topic, format) {
         "你只能改写 selectedText 这一段，并返回可直接替换 selectedText 的文本。",
         "不要返回整篇文章，不要解释，不要 Markdown，不要 JSON 以外的内容。",
         "保留原文事实和语气边界；不编造价格、时间、学员案例、爆满现场、效果承诺或升学暗示。",
+        format === "xhs_image" ? "如果是小红书图文，替换文本也必须避开极限绝对、医疗功效、过度营销、导流、权威背书、玄学、金融收益承诺类表达。" : null,
         "输出必须是严格 JSON，格式为 {\"replacement\":\"...\"}。",
-      ].join("\n"),
+      ].filter(Boolean).join("\n"),
     },
     {
       role: "user",
@@ -5515,6 +5729,7 @@ function selectionRefineMessages(profile, task, topic, format) {
         instruction,
         selectedText,
         surroundingContent: currentText,
+        compliancePolicy: format === "xhs_image" ? xhsCompliancePolicy() : null,
         constraints: [
           "replacement 必须能直接放回原位置，前后语义自然衔接。",
           "如果用户要求变短，就明显压缩；如果要求更口语，就像真实运营者会说的话。",
@@ -5598,20 +5813,16 @@ function normalizeMaterial(raw, format, fallback) {
       imageContents = Array.isArray(fallback.imageContents) ? fallback.imageContents : [];
       shotList = Array.isArray(fallback.shotList) ? fallback.shotList : [];
     }
-    const visualPlan = normalizeXhsVisualPlan(input.visualPlan, fallback.visualPlan, {
-      pageCount: 2 + Math.max(imageContents.length, shotList.length),
-    });
-    return {
+    return sanitizeXhsMaterial({
       type: "xhs_image",
       titles: Array.isArray(input.titles) && input.titles.length ? input.titles : fallback.titles,
       cover,
-      visualPlan,
       imageContents,
       shotList,
       body: firstAvailable(input.body, fallback.body),
       tags: Array.isArray(input.tags) && input.tags.length ? input.tags.map((tag) => String(tag).replace(/^#/, "")) : fallback.tags,
       commentGuide: firstAvailable(input.commentGuide, fallback.commentGuide),
-    };
+    });
   }
 
   if (formatType === "moments_text") {
@@ -5804,7 +6015,9 @@ async function buildSelectionRefineWithAi(profile, task = {}) {
   try {
     const text = await callAiText(provider, config, selectionRefineMessages(profile, task, fallbackPack.topic, format));
     const data = extractJson(text);
-    const replacement = String(data.replacement || "").trim();
+    const replacement = format === "xhs_image"
+      ? sanitizeXhsText(data.replacement || "").trim()
+      : String(data.replacement || "").trim();
     if (!replacement) throw new Error("AI 返回的 replacement 为空");
     return {
       replacement,
