@@ -1,0 +1,841 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>爆款参考库 · Super Tennis Agent</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f8f3;
+        --panel: #fff;
+        --ink: #172018;
+        --muted: #647064;
+        --line: #dfe7dc;
+        --green: #176c43;
+        --green-dark: #0f4d31;
+        --soft: #eaf4e8;
+        --soft-2: #f9fbf7;
+        --bad: #991b1b;
+        --warn: #8a5a00;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      }
+
+      button,
+      textarea,
+      input,
+      select {
+        font: inherit;
+      }
+
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        min-height: 48px;
+        padding: 8px 16px;
+        background: rgba(255, 255, 255, 0.94);
+        border-bottom: 1px solid var(--line);
+        backdrop-filter: blur(10px);
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .brand strong {
+        font-size: 14px;
+      }
+
+      .brand span {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 280px minmax(0, 1fr) 390px;
+        gap: 12px;
+        padding: 12px;
+      }
+
+      .panel {
+        min-width: 0;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+
+      .side,
+      .detail {
+        position: sticky;
+        top: 60px;
+        max-height: calc(100vh - 72px);
+        overflow: auto;
+      }
+
+      .panel-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 12px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        margin-bottom: 0;
+        font-size: 18px;
+      }
+
+      h2 {
+        margin-bottom: 0;
+        font-size: 15px;
+      }
+
+      h3 {
+        margin-bottom: 8px;
+        font-size: 15px;
+      }
+
+      .hint {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      .filters,
+      .stats,
+      .detail-body {
+        padding: 12px;
+      }
+
+      .filters {
+        display: grid;
+        gap: 10px;
+      }
+
+      label {
+        display: grid;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      input,
+      select,
+      textarea {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: #fff;
+        color: var(--ink);
+        padding: 8px 9px;
+        outline: none;
+      }
+
+      textarea {
+        min-height: 108px;
+        resize: vertical;
+        line-height: 1.6;
+      }
+
+      input:focus,
+      select:focus,
+      textarea:focus {
+        border-color: rgba(23, 108, 67, 0.45);
+        box-shadow: 0 0 0 3px rgba(23, 108, 67, 0.08);
+      }
+
+      button {
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: #fff;
+        color: var(--ink);
+        padding: 8px 10px;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: var(--soft-2);
+      }
+
+      .primary {
+        border-color: var(--green);
+        background: var(--green);
+        color: #fff;
+      }
+
+      .primary:hover {
+        background: var(--green-dark);
+      }
+
+      .ghost {
+        background: transparent;
+      }
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .stat {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+        background: var(--soft-2);
+      }
+
+      .stat strong {
+        display: block;
+        font-size: 20px;
+      }
+
+      .stat span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .list {
+        display: grid;
+        gap: 10px;
+        padding: 12px;
+      }
+
+      .card {
+        display: grid;
+        gap: 9px;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+        text-align: left;
+      }
+
+      .card.is-active {
+        border-color: rgba(23, 108, 67, 0.7);
+        box-shadow: 0 0 0 3px rgba(23, 108, 67, 0.08);
+      }
+
+      .card-top,
+      .score-row,
+      .meta-row {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .title {
+        margin: 0;
+        font-size: 15px;
+        line-height: 1.45;
+      }
+
+      .excerpt {
+        margin: 0;
+        color: #354139;
+        font-size: 13px;
+        line-height: 1.65;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 3px 8px;
+        color: var(--muted);
+        font-size: 12px;
+        background: var(--soft-2);
+      }
+
+      .pill-good {
+        border-color: rgba(23, 108, 67, 0.25);
+        background: var(--soft);
+        color: var(--green-dark);
+      }
+
+      .pill-warn {
+        border-color: rgba(138, 90, 0, 0.25);
+        background: #fff7df;
+        color: var(--warn);
+      }
+
+      .pill-bad {
+        border-color: rgba(153, 27, 27, 0.2);
+        background: #fff1f1;
+        color: var(--bad);
+      }
+
+      .source-link {
+        display: inline-flex;
+        align-items: center;
+        width: fit-content;
+        border: 1px solid rgba(23, 108, 67, 0.22);
+        border-radius: 999px;
+        background: var(--soft);
+        color: var(--green-dark);
+        padding: 4px 9px;
+        font-size: 12px;
+        font-weight: 650;
+        text-decoration: none;
+      }
+
+      .source-link:hover {
+        background: #ddedd9;
+      }
+
+      .score {
+        display: grid;
+        gap: 4px;
+        min-width: 74px;
+      }
+
+      .score strong {
+        font-size: 18px;
+      }
+
+      .score span {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .detail-body {
+        display: grid;
+        gap: 12px;
+      }
+
+      .section {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        background: #fff;
+      }
+
+      .section ul {
+        margin: 0;
+        padding-left: 18px;
+        color: #354139;
+        line-height: 1.8;
+        font-size: 13px;
+      }
+
+      .analysis {
+        white-space: pre-wrap;
+        color: #26332b;
+        font-size: 13px;
+        line-height: 1.8;
+      }
+
+      .empty {
+        padding: 30px 12px;
+        color: var(--muted);
+        text-align: center;
+      }
+
+      @media (max-width: 1120px) {
+        .layout {
+          grid-template-columns: 220px minmax(0, 1fr);
+        }
+
+        .detail {
+          position: static;
+          grid-column: 1 / -1;
+          max-height: none;
+        }
+      }
+
+      @media (max-width: 760px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+
+        .side {
+          position: static;
+          max-height: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <strong>爆款参考库</strong>
+        <span>筛选适合 Super 超极网球借鉴的内容结构</span>
+      </div>
+      <div class="actions">
+        <button id="reloadBtn" type="button">刷新数据</button>
+        <button class="primary" id="analyzeBtn" type="button">拆解当前参考</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="panel side">
+        <div class="panel-head">
+          <h2>筛选</h2>
+        </div>
+        <div class="filters">
+          <label>
+            搜索
+            <input id="searchInput" type="search" placeholder="标题、正文、标签" />
+          </label>
+          <label>
+            分层
+            <select id="tierInput">
+              <option value="all">全部</option>
+              <option value="worth_analyzing">优先拆解</option>
+              <option value="adaptable">可改写</option>
+              <option value="hook_only">只参考钩子</option>
+              <option value="not_recommended">不建议用</option>
+            </select>
+          </label>
+          <label>
+            平台
+            <select id="platformInput">
+              <option value="all">全部平台</option>
+              <option value="xhs">小红书</option>
+              <option value="douyin">抖音</option>
+              <option value="unknown">未知</option>
+            </select>
+          </label>
+          <label>
+            内容类型
+            <select id="sourceTypeInput">
+              <option value="all">全部</option>
+              <option value="image">图文</option>
+              <option value="video">视频</option>
+              <option value="unknown">未知</option>
+            </select>
+          </label>
+        </div>
+        <div class="stats" id="stats"></div>
+      </aside>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h1>参考内容</h1>
+            <p class="hint" id="listHint">读取中</p>
+          </div>
+        </div>
+        <div class="list" id="list"></div>
+      </section>
+
+      <aside class="panel detail">
+        <div class="panel-head">
+          <h2>拆解</h2>
+        </div>
+        <div class="detail-body" id="detail"></div>
+      </aside>
+    </main>
+
+    <script>
+      const keywordGroups = {
+        tennis: ["网球", "tennis", "球拍", "挥拍", "回球", "对墙", "发球", "接球"],
+        parents: ["家长", "孩子", "小孩", "儿童", "少儿", "青少年", "亲子", "妈妈", "爸爸", "宝妈", "家庭"],
+        decision: ["怎么选", "适合", "几岁", "要不要", "有没有必要", "第一项", "第一次", "入门", "启蒙", "兴趣班", "选择"],
+        graphic: ["清单", "建议", "方法", "避坑", "误区", "科普", "对比", "区别", "必看", "收藏", "攻略", "指南"],
+        local: ["广州", "白云", "同和", "天河", "越秀", "海珠", "番禺", "附近", "本地", "门店", "球场"],
+        conversion: ["体验课", "预约", "报名", "探店", "开业", "活动", "打卡", "挑战", "社群", "咨询"],
+        sport: ["运动", "篮球", "游泳", "羽毛球", "足球", "体能", "专注力", "协调", "坚持"],
+      };
+      const riskyWords = ["稳赚", "保本", "暴富", "逆袭", "治愈", "根治", "无效退款", "保证", "100%", "国家级", "世界级", "全网第一", "唯一", "最强", "天花板", "秒杀", "私信", "加微信", "加vx"];
+      const weakSignals = ["抽象", "鸡汤", "玄学", "情感语录", "无关", "明星", "八卦", "穿搭", "美妆", "减肥"];
+      const tierLabels = {
+        worth_analyzing: "优先拆解",
+        adaptable: "可改写",
+        hook_only: "只参考钩子",
+        not_recommended: "不建议用",
+      };
+      const tierClass = {
+        worth_analyzing: "pill-good",
+        adaptable: "pill-good",
+        hook_only: "pill-warn",
+        not_recommended: "pill-bad",
+      };
+      const sourceTypeLabels = {
+        image: "图文",
+        video: "视频",
+        unknown: "未知",
+      };
+
+      const state = {
+        references: [],
+        rankings: [],
+        selectedId: "",
+        filter: { search: "", tier: "all", platform: "all", sourceType: "all" },
+      };
+
+      const $ = (selector) => document.querySelector(selector);
+
+      function escapeHtml(value) {
+        return String(value ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+
+      function textOf(item) {
+        return [item.title, item.content, item.author, ...(Array.isArray(item.tags) ? item.tags : [])]
+          .filter(Boolean)
+          .join("\n")
+          .toLowerCase();
+      }
+
+      function sourceTypeOf(item = {}) {
+        const text = String(item.sourceType || item.raw?.type || "").trim().toLowerCase();
+        if (["video", "视频"].includes(text)) return "video";
+        if (["image", "normal", "images", "note", "graphic", "图文"].includes(text)) return "image";
+        return "unknown";
+      }
+
+      function sourceTypeLabel(item = {}) {
+        return sourceTypeLabels[sourceTypeOf(item)] || "未知";
+      }
+
+      function countHits(text, words) {
+        return words.reduce((count, word) => count + (text.includes(String(word).toLowerCase()) ? 1 : 0), 0);
+      }
+
+      function metricsScore(metrics = {}) {
+        const raw = (metrics.likes || 0)
+          + (metrics.collects || 0) * 2.2
+          + (metrics.comments || 0) * 3.2
+          + (metrics.shares || 0) * 2.4;
+        return Math.min(100, Math.round(Math.log10(raw + 1) * 24));
+      }
+
+      function detectMechanisms(text) {
+        const mechanisms = [];
+        if (/[？?]/.test(text) || /为什么|怎么|到底|适不适合|要不要/.test(text)) mechanisms.push("问题钩子");
+        if (/不是|而是|误区|别急|先别|很多人.*错/.test(text)) mechanisms.push("反常识/纠偏");
+        if (/对比|区别|篮球|游泳|羽毛球|怎么选/.test(text)) mechanisms.push("比较决策");
+        if (/第一次|真实|记录|观察|体验|发生了什么/.test(text)) mechanisms.push("真实场景");
+        if (/清单|步骤|方法|建议|避坑|注意/.test(text)) mechanisms.push("收藏型信息");
+        if (/挑战|打卡|100个|30天|系列/.test(text)) mechanisms.push("系列/挑战");
+        return mechanisms.length ? mechanisms : ["普通内容"];
+      }
+
+      function scoreFit(item) {
+        const text = textOf(item);
+        const hits = {
+          tennis: countHits(text, keywordGroups.tennis),
+          parents: countHits(text, keywordGroups.parents),
+          decision: countHits(text, keywordGroups.decision),
+          graphic: countHits(text, keywordGroups.graphic),
+          local: countHits(text, keywordGroups.local),
+          conversion: countHits(text, keywordGroups.conversion),
+          sport: countHits(text, keywordGroups.sport),
+        };
+        const riskHits = countHits(text, riskyWords);
+        const weakHits = countHits(text, weakSignals);
+        const mechanisms = detectMechanisms(text);
+        let relevance = 0;
+        relevance += Math.min(28, hits.tennis * 14);
+        relevance += Math.min(28, hits.parents * 9);
+        relevance += Math.min(24, hits.decision * 8);
+        relevance += Math.min(16, hits.graphic * 5);
+        relevance += Math.min(6, hits.local * 2);
+        relevance += Math.min(8, hits.conversion * 2);
+        relevance += Math.min(12, hits.sport * 3);
+        if (!hits.tennis && hits.sport && hits.parents && hits.decision) relevance += 14;
+        if (hits.parents && hits.graphic) relevance += 8;
+        if (mechanisms.includes("比较决策") || mechanisms.includes("真实场景")) relevance += 8;
+        if (mechanisms.includes("收藏型信息")) relevance += 10;
+        relevance -= Math.min(24, riskHits * 8);
+        relevance -= Math.min(18, weakHits * 6);
+        relevance = Math.max(0, Math.min(100, relevance));
+        const hotness = metricsScore(item.metrics || {});
+        const adaptability = Math.max(0, Math.min(100, Math.round(relevance * 0.7 + mechanisms.length * 7 - riskHits * 10)));
+        const total = Math.round(hotness * 0.38 + relevance * 0.42 + adaptability * 0.2);
+        const reasons = [];
+        if (hotness >= 70) reasons.push("互动数据强");
+        if (hits.parents) reasons.push("贴近家长/孩子场景");
+        if (hits.tennis) reasons.push("直接关联网球");
+        else if (hits.sport) reasons.push("可迁移到运动选择内容");
+        if (hits.decision) reasons.push("有家长决策问题");
+        if (hits.graphic) reasons.push("适合小红书图文拆解");
+        if (hits.local) reasons.push("有本地/门店线索，但不作为主要判断");
+        if (hits.conversion) reasons.push("可轻承接体验/活动转化");
+        if (mechanisms.length) reasons.push(`结构：${mechanisms.join("、")}`);
+        if (riskHits) reasons.push("存在营销/违规表达风险，需要谨慎改写");
+        if (weakHits) reasons.push("内容方向偏泛，需要过滤");
+        let tier = "not_recommended";
+        if (total >= 72 && relevance >= 58 && riskHits <= 1) tier = "worth_analyzing";
+        else if (total >= 58 && relevance >= 42 && riskHits <= 2) tier = "adaptable";
+        else if (hotness >= 62 && relevance >= 25) tier = "hook_only";
+        return { hotness, relevance, adaptability, total, tier, mechanisms, reasons, hits, riskHits };
+      }
+
+      function normalizeRankings(references, rankings) {
+        const byId = new Map((rankings || []).map((item) => [item.id, item]));
+        return references.map((ref) => {
+          const existing = byId.get(ref.id);
+          const score = existing?.score || scoreFit(ref);
+          return {
+            ...ref,
+            sourceType: existing?.sourceType || sourceTypeOf(ref),
+            videoUrl: existing?.videoUrl || ref.videoUrl || "",
+            coverUrl: existing?.coverUrl || ref.coverUrl || ref.raw?.cover || "",
+            score,
+            suggestion: existing?.suggestion || suggestionFor(ref, score),
+          };
+        }).sort((a, b) => b.score.total - a.score.total);
+      }
+
+      function suggestionFor(item, score) {
+        const title = String(item.title || item.content || "").slice(0, 48);
+        if (score.tier === "worth_analyzing") return `优先拆解：把「${title}」的家长决策钩子和图文结构改成少儿网球内容。`;
+        if (score.tier === "adaptable") return "可改写：保留图文结构，不复制原文，转成家长决策或少儿网球认知内容。";
+        if (score.tier === "hook_only") return "只参考钩子：数据可能不错，但业务适配一般。";
+        return "不建议使用：不贴合业务，或风险/噪音较高。";
+      }
+
+      async function fetchJson(url) {
+        const res = await fetch(`${url}?t=${Date.now()}`);
+        if (!res.ok) throw new Error(`${url} 读取失败`);
+        return res.json();
+      }
+
+      async function loadData() {
+        $("#listHint").textContent = "读取参考库中";
+        let references = [];
+        let rankings = [];
+        try {
+          const refData = await fetchJson("/data/hot-references.json");
+          references = Array.isArray(refData.items) ? refData.items : [];
+        } catch (error) {
+          $("#list").innerHTML = `<div class="empty">还没有参考库数据。先运行导入脚本生成 data/hot-references.json。</div>`;
+        }
+        try {
+          const rankData = await fetchJson("/data/hot-reference-rankings.json");
+          rankings = Array.isArray(rankData.items) ? rankData.items : [];
+        } catch {
+          rankings = [];
+        }
+        state.references = normalizeRankings(references, rankings);
+        if (!state.selectedId && state.references.length) state.selectedId = state.references[0].id;
+        render();
+      }
+
+      function filteredItems() {
+        const q = state.filter.search.trim().toLowerCase();
+        return state.references.filter((item) => {
+          if (state.filter.tier !== "all" && item.score.tier !== state.filter.tier) return false;
+          if (state.filter.platform !== "all" && item.platform !== state.filter.platform) return false;
+          if (state.filter.sourceType !== "all" && sourceTypeOf(item) !== state.filter.sourceType) return false;
+          if (q && !textOf(item).includes(q)) return false;
+          return true;
+        });
+      }
+
+      function renderStats(items) {
+        const counts = {
+          worth_analyzing: items.filter((item) => item.score.tier === "worth_analyzing").length,
+          image: items.filter((item) => sourceTypeOf(item) === "image").length,
+          video: items.filter((item) => sourceTypeOf(item) === "video").length,
+        };
+        $("#stats").innerHTML = `
+          <div class="stat"><strong>${items.length}</strong><span>当前结果</span></div>
+          <div class="stat"><strong>${counts.image}</strong><span>图文</span></div>
+          <div class="stat"><strong>${counts.video}</strong><span>视频</span></div>
+          <div class="stat"><strong>${counts.worth_analyzing}</strong><span>优先拆解</span></div>
+        `;
+      }
+
+      function renderList(items) {
+        $("#listHint").textContent = items.length ? `共 ${items.length} 条，按适配分排序` : "暂无匹配内容";
+        if (!items.length) {
+          $("#list").innerHTML = `<div class="empty">没有匹配内容。可以换关键词或先导入更多参考。</div>`;
+          return;
+        }
+        $("#list").innerHTML = items.map((item) => {
+          const metrics = item.metrics || {};
+          return `
+            <button class="card ${item.id === state.selectedId ? "is-active" : ""}" data-select="${escapeHtml(item.id)}" type="button">
+              <div class="card-top">
+                <span class="pill ${tierClass[item.score.tier] || ""}">${tierLabels[item.score.tier] || item.score.tier}</span>
+                <span class="pill">${escapeHtml(sourceTypeLabel(item))}</span>
+                <span class="pill">${escapeHtml(item.platform || "unknown")}</span>
+                <span class="pill">总分 ${item.score.total}</span>
+              </div>
+              <h3 class="title">${escapeHtml(item.title || "无标题")}</h3>
+              <p class="excerpt">${escapeHtml(String(item.content || "").slice(0, 140))}</p>
+              <div class="score-row">
+                <span class="pill">赞 ${metrics.likes || 0}</span>
+                <span class="pill">藏 ${metrics.collects || 0}</span>
+                <span class="pill">评 ${metrics.comments || 0}</span>
+                <span class="pill">享 ${metrics.shares || 0}</span>
+                ${item.url ? `<a class="source-link" href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer" data-source-link>打开原帖</a>` : `<span class="pill">暂无链接</span>`}
+              </div>
+            </button>
+          `;
+        }).join("");
+      }
+
+      function renderDetail() {
+        const item = state.references.find((ref) => ref.id === state.selectedId);
+        if (!item) {
+          $("#detail").innerHTML = `<div class="empty">选择一条参考内容查看拆解。</div>`;
+          return;
+        }
+        const score = item.score || {};
+        const sourceType = sourceTypeOf(item);
+        const contentTitle = sourceType === "video" ? "视频文案" : (sourceType === "image" ? "正文摘要" : "原文摘要");
+        $("#detail").innerHTML = `
+          <section class="section">
+            <div class="card-top">
+              <span class="pill ${tierClass[score.tier] || ""}">${tierLabels[score.tier] || score.tier}</span>
+              <span class="pill">${escapeHtml(sourceTypeLabel(item))}</span>
+              <span class="pill">热度 ${score.hotness}</span>
+              <span class="pill">适配 ${score.relevance}</span>
+              <span class="pill">可改 ${score.adaptability}</span>
+            </div>
+            <h3 style="margin-top: 10px;">${escapeHtml(item.title || "无标题")}</h3>
+            <p class="hint">${escapeHtml(item.suggestion || "")}</p>
+            ${item.url ? `<p style="margin: 10px 0 0;"><a class="source-link" href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">打开原帖</a></p>` : `<p class="hint" style="margin-top: 10px;">暂无原帖链接</p>`}
+          </section>
+          <section class="section">
+            <h3>为什么这样分</h3>
+            <ul>${(score.reasons || []).map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>
+          </section>
+          <section class="section">
+            <h3>${escapeHtml(contentTitle)}</h3>
+            <p class="excerpt">${escapeHtml(item.content || "暂无正文")}</p>
+          </section>
+          <section class="section">
+            <h3>AI 拆解结果</h3>
+            <div class="analysis" id="analysisResult">${escapeHtml(item.analysis || "点击顶部「拆解当前参考」。")}</div>
+          </section>
+        `;
+      }
+
+      function render() {
+        const items = filteredItems();
+        renderStats(items);
+        renderList(items);
+        renderDetail();
+      }
+
+      function buildPrompt(item) {
+        return [
+          "请拆解这条小红书/抖音参考内容，但不要照抄它。",
+          "目标：帮助一个广州网球场学习爆款结构，转化为自己的少儿网球/亲子运动/开业引流内容。",
+          "",
+          "请输出：",
+          "1. 这条内容吸引停留的核心原因",
+          "2. 标题/封面钩子拆解",
+          "3. 内容结构拆解",
+          "4. 评论或收藏动机",
+          "5. 哪些地方不适合我们照搬",
+          "6. 可以改造成的 5 个网球场选题",
+          "7. 最推荐的一条本地化内容方案",
+          "",
+          `平台：${item.platform}`,
+          `标题：${item.title}`,
+          `正文：${item.content}`,
+          `数据：点赞 ${item.metrics?.likes || 0}，收藏 ${item.metrics?.collects || 0}，评论 ${item.metrics?.comments || 0}，分享 ${item.metrics?.shares || 0}`,
+          `系统预判：${tierLabels[item.score?.tier] || item.score?.tier || "未知"}；原因：${(item.score?.reasons || []).join("、")}`,
+          `标签：${(item.tags || []).join("、")}`,
+        ].join("\n");
+      }
+
+      async function analyzeSelected() {
+        const item = state.references.find((ref) => ref.id === state.selectedId);
+        if (!item) return;
+        const result = $("#analysisResult");
+        if (result) result.textContent = "正在调用 Agent 拆解...";
+        $("#analyzeBtn").disabled = true;
+        try {
+          const res = await fetch("/api/agent/free-chat", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              message: buildPrompt(item),
+              context: { source: "hot-reference-board", referenceId: item.id, ranking: item.score },
+              history: [],
+              attachments: [],
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "拆解失败");
+          item.analysis = data.reply || "";
+          renderDetail();
+        } catch (error) {
+          const next = $("#analysisResult");
+          if (next) next.textContent = `拆解失败：${error.message}`;
+        } finally {
+          $("#analyzeBtn").disabled = false;
+        }
+      }
+
+      document.addEventListener("click", (event) => {
+        if (event.target.closest("[data-source-link]")) {
+          event.stopPropagation();
+          return;
+        }
+        const select = event.target.closest("[data-select]");
+        if (select) {
+          state.selectedId = select.dataset.select;
+          render();
+        }
+      });
+
+      $("#searchInput").addEventListener("input", (event) => {
+        state.filter.search = event.target.value;
+        render();
+      });
+      $("#tierInput").addEventListener("change", (event) => {
+        state.filter.tier = event.target.value;
+        render();
+      });
+      $("#platformInput").addEventListener("change", (event) => {
+        state.filter.platform = event.target.value;
+        render();
+      });
+      $("#sourceTypeInput").addEventListener("change", (event) => {
+        state.filter.sourceType = event.target.value;
+        render();
+      });
+      $("#reloadBtn").addEventListener("click", loadData);
+      $("#analyzeBtn").addEventListener("click", analyzeSelected);
+
+      loadData();
+    </script>
+  </body>
+</html>

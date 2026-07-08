@@ -3,6 +3,7 @@ const els = {
   profileStatus: document.querySelector("#profileStatus"),
   profileShortcutBtn: document.querySelector("#profileShortcutBtn"),
   aiShortcutBtn: document.querySelector("#aiShortcutBtn"),
+  referenceShortcutBtn: document.querySelector("#referenceShortcutBtn"),
   saveProfileBtn: document.querySelector("#saveProfileBtn"),
   saveAiBtn: document.querySelector("#saveAiBtn"),
   aiStatus: document.querySelector("#aiStatus"),
@@ -45,6 +46,7 @@ const els = {
   libraryResult: document.querySelector("#libraryResult"),
   channelsView: document.querySelector("#channelsView"),
   channelsResult: document.querySelector("#channelsResult"),
+  referenceView: document.querySelector("#referenceView"),
   profileView: document.querySelector("#profileView"),
   aiView: document.querySelector("#aiView"),
   navItems: Array.from(document.querySelectorAll(".nav-item")),
@@ -138,7 +140,7 @@ const CAMPAIGN_MATERIAL_DESCRIPTIONS = {
 };
 let topicsReady = false;
 let activeView = "plan";
-let agentSession = { open: false, expanded: false, messages: [], priorBrief: null, lastMode: null, busy: false, pendingResult: false, activeResult: null, activeFormat: null, selectedMaterial: null };
+let agentSession = { open: false, expanded: false, messages: [], priorBrief: null, lastMode: null, busy: false, pendingResult: false, activeResult: null, activeFormat: null, selectedMaterial: null, referenceMode: false, referenceContext: null };
 let agentMemory = null;
 let currentRoute = { module: "plan", page: "setup", slotIndex: null };
 let profileReturnRoute = null;
@@ -471,8 +473,24 @@ function compactCharCount(value) {
 
 function videoNarrationCharCount(material) {
   const hook = material?.hook && typeof material.hook === "object" ? material.hook : { narration: material?.hook || "" };
-  const script = Array.isArray(material?.script) ? material.script : [];
+  const script = videoScriptWithoutDuplicateHook(material);
   return compactCharCount([hook.narration, ...script.map((s) => s.narration)].filter(Boolean).join(""));
+}
+
+function sameVideoLine(a = "", b = "") {
+  const left = String(a || "").replace(/\s+/g, "").trim();
+  const right = String(b || "").replace(/\s+/g, "").trim();
+  return Boolean(left && right && left === right);
+}
+
+function videoScriptWithoutDuplicateHook(material) {
+  const hook = material?.hook && typeof material.hook === "object" ? material.hook : { narration: material?.hook || "" };
+  const script = Array.isArray(material?.script) ? material.script : [];
+  const first = script[0] || {};
+  if (sameVideoLine(first.narration, hook.narration) || sameVideoLine(first.onScreenText, hook.onScreenText)) {
+    return script.slice(1);
+  }
+  return script;
 }
 
 function videoSubtitleStyleLabel(style) {
@@ -484,7 +502,7 @@ function materialToText(m) {
   if (m.editedText) return String(m.editedText);
   if (m.type === "video") {
     const hook = m.hook && typeof m.hook === "object" ? m.hook : { narration: m.hook || "" };
-    const script = Array.isArray(m.script) ? m.script : [];
+    const script = videoScriptWithoutDuplicateHook(m);
     const fullNarration = [hook.narration, ...script.map((s) => s.narration)].filter(Boolean).join("\n");
     const fullSubtitle = [hook.onScreenText, ...script.map((s) => s.onScreenText)].filter(Boolean).join("\n");
     const narrationCount = Number(m.narrationCharCount) || videoNarrationCharCount(m);
@@ -1027,12 +1045,14 @@ function renderModuleVisibility(module) {
   for (const item of els.navItems) item.classList.toggle("active", item.dataset.view === module);
   els.profileShortcutBtn?.classList.toggle("is-active", module === "profile");
   els.aiShortcutBtn?.classList.toggle("is-active", module === "ai");
+  els.referenceShortcutBtn?.classList.toggle("is-active", module === "reference");
   els.planView.classList.toggle("hidden", module !== "plan");
   els.topicsView.classList.toggle("hidden", module !== "topics");
   els.contentView.classList.toggle("hidden", module !== "content");
   els.campaignView?.classList.toggle("hidden", module !== "campaign");
   els.libraryView.classList.toggle("hidden", module !== "library");
   els.channelsView.classList.toggle("hidden", module !== "channels");
+  els.referenceView?.classList.toggle("hidden", module !== "reference");
   els.profileView.classList.toggle("hidden", module !== "profile");
   els.aiView.classList.toggle("hidden", module !== "ai");
   updateAgentContextLabel();
@@ -1367,7 +1387,12 @@ async function testAiProvider(provider) {
   try {
     const config = readAiSettingsForm().providers[provider];
     const data = await apiRequest("/api/ai-test", { provider, config });
-    status.textContent = data.message || "连接成功";
+    const saved = await apiRequest("/api/ai-settings", { settings: readAiSettingsForm() });
+    fillAiSettings(saved.settings);
+    els.aiStatus.textContent = "已保存";
+    els.aiStatus.classList.remove("status-error");
+    els.aiStatus.classList.add("status-success");
+    status.textContent = `${data.message || "连接成功"}，已保存`;
     status.classList.add("is-success");
   } catch (error) {
     status.textContent = error.message;
@@ -1735,7 +1760,7 @@ function applyTopicFilters() {
 
 function renderVideo(material) {
   const hook = material.hook && typeof material.hook === "object" ? material.hook : { narration: material.hook || "" };
-  const script = Array.isArray(material.script) ? material.script : [];
+  const script = videoScriptWithoutDuplicateHook(material);
   const fullNarration = [hook.narration, ...script.map((s) => s.narration)].filter(Boolean).join("\n");
   const fullSubtitle = [hook.onScreenText, ...script.map((s) => s.onScreenText)].filter(Boolean).join("\n");
   const narrationCount = Number(material.narrationCharCount) || videoNarrationCharCount(material);
@@ -3243,7 +3268,7 @@ async function copyFinishedItem(id, button) {
 function videoPartText(material, part) {
   if (!material || material.type !== "video") return "";
   const hook = material.hook && typeof material.hook === "object" ? material.hook : { narration: material.hook || "" };
-  const script = Array.isArray(material.script) ? material.script : [];
+  const script = videoScriptWithoutDuplicateHook(material);
   return part === "subtitle"
     ? [hook.onScreenText, ...script.map((s) => s.onScreenText)].filter(Boolean).join("\n")
     : [hook.narration, ...script.map((s) => s.narration)].filter(Boolean).join("\n");
@@ -3718,9 +3743,8 @@ async function generateDirections(opts = {}) {
 }
 
 const PIPELINE_STEPS = [
-  { id: "insight", label: "分析家长决策点" },
-  { id: "angles", label: "展开内容角度" },
-  { id: "topics", label: "生成选题方向" },
+  { id: "context", label: "读取球场与运营目标" },
+  { id: "topics", label: "一次生成选题方向" },
 ];
 
 const SLOT_PIPELINE_STEPS = [
@@ -3735,10 +3759,10 @@ function renderDirectionLoading(opts = {}) {
   const steps = stepSet.map((step) => `<li class="pipeline-step is-running">${escapeHtml(step.label)}</li>`).join("");
   const title = fromSlot
     ? `正在围绕「${theme || "本槽位主题"}」展开具体选题…`
-    : "正在按家长决策链生成选题…";
+    : "正在结合上下文生成选题…";
   const sub = fromSlot
     ? "槽位已确定主题与平台，AI 直出多条偏成稿的标题，挑选后保存到选题库或采用到这个排期格。"
-    : "洞察 → 角度 → 选题三步推理中，稍候片刻即可挑选保存或直接生产。";
+    : "不会让 AI 分多步填表；本次会一次性结合球场档案、运营目标和必要的家长视角生成。";
   els.topicsGenerateContent.innerHTML = `
     <article class="empty-state direction-loading">
       <h2>${escapeHtml(title)}</h2>
@@ -3762,6 +3786,8 @@ function renderInsightPanel(session) {
   if (!insight) return "";
   const topQuestions = Array.isArray(insight.topQuestions) ? insight.topQuestions : [];
   const angles = Array.isArray(session.angles) ? session.angles : [];
+  const usedLenses = Array.isArray(insight.usedLenses) ? insight.usedLenses : [];
+  const qualityBar = Array.isArray(insight.qualityBar) ? insight.qualityBar : [];
   const angleRows = angles.map((angle) => `
     <tr>
       <td><span class="goal-chip ${CONTENT_GOAL_CLASS[angle.contentGoal] || ""}">${escapeHtml(angle.contentGoal || angle.chainId || "")}</span></td>
@@ -3769,17 +3795,19 @@ function renderInsightPanel(session) {
     </tr>
   `).join("");
   return `
-    <details class="evidence-panel" open>
-      <summary>本次依据：家长洞察 + 角度矩阵</summary>
+    <details class="evidence-panel">
+      <summary>生成依据</summary>
       <div class="evidence-body">
         <div class="evidence-block">
-          <h4>家长在纠结什么</h4>
+          <h4>本次关注</h4>
           ${topQuestions.length ? renderList(topQuestions) : "<p>—</p>"}
           ${insight.weeklyFocus ? `<p class="evidence-focus"><strong>本次重点：</strong>${escapeHtml(insight.weeklyFocus)}</p>` : ""}
+          ${usedLenses.length ? `<p class="evidence-focus"><strong>参考镜头：</strong>${escapeHtml(usedLenses.join(" / "))}</p>` : ""}
+          ${qualityBar.length ? `<div class="note-box compact">${renderList(qualityBar)}</div>` : ""}
         </div>
         ${angles.length ? `
           <div class="evidence-block">
-            <h4>角度矩阵（${angles.length} 条）</h4>
+            <h4>后台参考角度（${angles.length} 条）</h4>
             <table class="angle-matrix"><tbody>${angleRows}</tbody></table>
           </div>
         ` : ""}
@@ -3791,6 +3819,7 @@ function renderInsightPanel(session) {
 function renderDirectionCard(direction) {
   const saved = savedDirectionIds.has(direction.id);
   const fromSlot = directionSession?.sourceSlotIndex !== null && directionSession?.sourceSlotIndex !== undefined;
+  const purposeLabel = direction.chainId === "hotspot_reference" ? "切入角度" : "解决什么";
   return `
     <article class="direction-card ${saved ? "is-saved" : ""}" data-direction-id="${escapeHtml(direction.id)}">
       <div class="direction-card-main">
@@ -3801,7 +3830,7 @@ function renderDirectionCard(direction) {
         <h3>${escapeHtml(direction.title)}</h3>
         ${direction.parentQuestion ? `<p class="direction-parent-q">家长会问：${escapeHtml(direction.parentQuestion)}</p>` : ""}
         ${direction.reason ? `<p class="direction-reason">为什么现在做：${escapeHtml(direction.reason)}</p>` : ""}
-        <p class="topic-purpose"><strong>解决什么：</strong>${escapeHtml(direction.purpose)}</p>
+        <p class="topic-purpose"><strong>${escapeHtml(purposeLabel)}：</strong>${escapeHtml(direction.purpose)}</p>
         ${renderPills([direction.pillarLabel, direction.platformText, direction.formatText, direction.audienceText])}
         ${renderStructurePreview(direction)}
         ${direction.risk ? `<small class="topic-risk">${escapeHtml(direction.risk)}</small>` : ""}
@@ -4009,6 +4038,8 @@ const resultRegistry = {
     isEmpty: (session) => !session?.directions?.length,
     summarize(session) {
       const list = session?.directions || [];
+      const hotspot = list.filter((d) => d.chainId === "hotspot_reference").length;
+      if (hotspot) return `已生成 ${list.length} 条热点借势选题`;
       const campaign = list.filter((d) => d.chainId === "campaign_focus").length;
       return campaign
         ? `已生成 ${list.length} 条选题方向（活动向 ${campaign} 条）`
@@ -4124,10 +4155,11 @@ function updateAgentContextLabel() {
     campaign: "当前：活动策划",
     library: "当前：成品库",
     channels: "当前：社群运营",
+    reference: "当前：爆款参考库",
     profile: "当前：球场档案",
     ai: "当前：AI 连接",
   };
-  els.agentContextLabel.textContent = labels[activeView] || "和主工作区联动";
+  els.agentContextLabel.textContent = agentSession.referenceMode ? "正在查：爆款参考库" : (labels[activeView] || "和主工作区联动");
 }
 
 function ensureAgentCardForActiveContext() {
@@ -4188,8 +4220,8 @@ function toggleAgentExpanded() {
   updateAgentPanelMode();
 }
 
-function pushAgentMessage(role, text, { skipRender = false, meta = "", chips = [], card = null } = {}) {
-  agentSession.messages.push({ role, text, meta, chips, card });
+function pushAgentMessage(role, text, { skipRender = false, meta = "", chips = [], card = null, references = [] } = {}) {
+  agentSession.messages.push({ role, text, meta, chips, card, references });
   if (!skipRender) renderAgentMessages();
 }
 
@@ -4231,12 +4263,37 @@ function renderAgentMessages() {
     const chips = (m.chips || []).map((c) => `<button class="agent-chip" data-agent-chip="${escapeHtml(c.value || c.label)}" data-agent-chip-kind="${escapeHtml(c.kind || "fill")}" type="button">${escapeHtml(c.label)}</button>`).join("");
     const chipRow = chips ? `<div class="agent-msg-chips">${chips}</div>` : "";
     const cardHtml = m.card ? renderResultCard(m.card, i === latestCardIndexByType[m.card.type]) : "";
-    return `<div class="agent-msg agent-msg-${m.role}"><div class="agent-bubble">${escapeHtml(m.text)}</div>${metaHtml}${chipRow}${cardHtml}</div>`;
+    const referencesHtml = renderAgentReferenceResults(m.references || []);
+    return `<div class="agent-msg agent-msg-${m.role}"><div class="agent-bubble">${escapeHtml(m.text)}</div>${metaHtml}${referencesHtml}${chipRow}${cardHtml}</div>`;
   }).join("");
   if (agentSession.busy) {
     els.agentMessages.innerHTML += `<div class="agent-msg agent-msg-assistant"><div class="agent-bubble agent-typing">思考中…</div></div>`;
   }
   els.agentMessages.scrollTop = els.agentMessages.scrollHeight;
+}
+
+function renderAgentReferenceResults(references = []) {
+  if (!Array.isArray(references) || !references.length) return "";
+  const cards = references.slice(0, 6).map((item) => {
+    const metrics = item.metrics || {};
+    const link = item.url
+      ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">打开原帖</a>`
+      : "";
+    return `
+      <article class="agent-reference-card">
+        <div class="agent-reference-card-top">
+          <span>${escapeHtml(item.typeLabel || item.sourceType || "参考")}</span>
+          <span>赞 ${metrics.likes || 0}</span>
+          <span>藏 ${metrics.collects || 0}</span>
+          <span>评 ${metrics.comments || 0}</span>
+        </div>
+        <strong>${escapeHtml(item.title || "无标题")}</strong>
+        ${item.content ? `<p>${escapeHtml(String(item.content).slice(0, 90))}</p>` : ""}
+        ${link}
+      </article>
+    `;
+  }).join("");
+  return `<div class="agent-reference-list">${cards}</div>`;
 }
 
 // 单条改写/保存等会改变全局结果数据后调用：把"当前 activeResult.type 的最新卡片"的
@@ -4275,12 +4332,175 @@ function mergeBrief(prior, incoming) {
   };
 }
 
+function activateAgentReferenceMode() {
+  agentSession.referenceMode = true;
+  updateAgentContextLabel();
+  pushAgentMessage("assistant", "你想查什么参考？可以直接输入关键词或热点，比如「森碟 翻译 网球」，我会先查参考库并分析能不能借。", {
+    chips: [
+      { label: "森碟 翻译 网球", value: "森碟 翻译 网球", kind: "fill" },
+      { label: "只看视频", value: "森碟 翻译 网球 视频", kind: "fill" },
+      { label: "打开参考库", value: "__open_reference_board__", kind: "open-reference-board" },
+    ],
+  });
+}
+
+function referenceSourceTypeFromText(text) {
+  if (/视频|短视频|抖音|视频号/.test(text)) return "video";
+  if (/图文|小红书|帖子|笔记/.test(text)) return "image";
+  return "all";
+}
+
+function cleanReferenceQuery(text) {
+  return String(text || "").replace(/只看|查一下|帮我查|查参考库|参考库|视频|图文|帖子|笔记/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function extractReferenceCoreQuery(text) {
+  const value = String(text || "");
+  const hotTerms = [
+    "森碟", "森蝶", "田亮", "田雨橙", "Cindy", "翻译", "英文", "英语", "口语", "爸爸",
+    "网球", "网球少女", "职业网球", "长期运动", "表达能力", "自信", "培养观念",
+  ];
+  const picked = hotTerms.filter((term) => value.includes(term));
+  if (picked.length) {
+    const normalized = picked.map((term) => term === "森蝶" ? "森碟" : term);
+    return [...new Set(normalized)].slice(0, 8).join(" ");
+  }
+  return cleanReferenceQuery(value)
+    .replace(/最近|相关素材|已经存在|里面|借这个热点|目标用户|广州家长|不要太营销|明星八卦|帮我出|每个给|标题|切入角度|封面文案|正文主线/g, " ")
+    .replace(/[。！？；：,.!?;:]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function referenceMetaText(meta = {}) {
+  if (meta.source === "ai") return `参考库分析：${[meta.provider, meta.model].filter(Boolean).join(" / ") || "AI"}`;
+  if (meta.source === "fallback") return `参考库分析失败，已回退摘要：${meta.error || "AI 不可用"}`;
+  return "参考库本地摘要";
+}
+
+function isExplicitTopicGenerationRequest(text) {
+  const value = String(text || "");
+  const wantsTopics = /(选题|题目|标题|内容方向|切入角度|角度|出\s*\d+\s*个|出\s*\d+\s*条|一组|10\s*个|十个)/.test(value);
+  const asksTopicShape = /(每个|分别).{0,12}(标题|切入角度|封面文案|正文主线|正文思路)/.test(value)
+    || /(标题|切入角度|封面文案|正文主线).{0,18}(标题|切入角度|封面文案|正文主线)/.test(value);
+  const mentionsContentFormat = /(小红书|图文|短视频|抖音|视频号|朋友圈)/.test(value);
+  const asksFullDraft = /(写成|生成|产出|做成|帮我写).{0,10}(正文|脚本|完整文案|一篇|一条内容|图文内容|帖子内容)/.test(value);
+  return (wantsTopics || asksTopicShape) && mentionsContentFormat && !asksFullDraft;
+}
+
+function topicCountFromText(text) {
+  const value = String(text || "");
+  const digit = value.match(/(?:出|给|生成|做)?\s*(\d{1,2})\s*(?:个|条)?\s*(?:选题|题目|标题|方向)/)
+    || value.match(/(?:选题|题目|标题|方向).{0,8}(\d{1,2})\s*(?:个|条)/);
+  if (digit) return Math.max(1, Math.min(12, Number(digit[1])));
+  if (/十个|十条|10个|10条/.test(value)) return 10;
+  return null;
+}
+
+function mentionsReferenceLibrary(text) {
+  return /(参考库|爆款库|爆款参考|素材库|相关素材|库里面|库里)/.test(String(text || ""));
+}
+
+async function runAgentReferenceSearch(text) {
+  agentSession.referenceMode = false;
+  agentSession.busy = true;
+  updateAgentContextLabel();
+  renderAgentMessages();
+  try {
+    profile = readProfileForm();
+    const query = extractReferenceCoreQuery(text) || cleanReferenceQuery(text) || text;
+    const data = await apiRequest("/api/agent/reference-search", {
+      profile,
+      query,
+      sourceType: referenceSourceTypeFromText(text),
+      limit: 8,
+    });
+    agentSession.busy = false;
+    agentSession.referenceContext = {
+      query,
+      references: data.references || [],
+      reply: data.reply || "",
+    };
+    pushAgentMessage("assistant", data.reply || "已查到参考内容。", {
+      meta: referenceMetaText(data.aiMeta || {}),
+      references: data.references || [],
+      chips: [
+        { label: "继续查参考", value: "__reference_search__", kind: "reference-search" },
+        { label: "打开参考库", value: "__open_reference_board__", kind: "open-reference-board" },
+        { label: "基于这些出选题", value: "__topic_from_reference__", kind: "topic-from-reference" },
+      ],
+    });
+  } catch (error) {
+    agentSession.busy = false;
+    pushAgentMessage("assistant", `参考库查询失败：${error.message}`);
+  }
+}
+
+async function referenceBriefFromMessage(text) {
+  if (!mentionsReferenceLibrary(text)) return null;
+  try {
+    const query = extractReferenceCoreQuery(text) || text;
+    const data = await apiRequest("/api/agent/reference-search", {
+      profile: readProfileForm(),
+      query,
+      sourceType: referenceSourceTypeFromText(text),
+      limit: 6,
+    });
+    agentSession.referenceContext = {
+      query,
+      references: data.references || [],
+      reply: data.reply || "",
+    };
+    if (Array.isArray(data.references) && data.references.length) {
+      return briefFromReferenceContext(text);
+    }
+  } catch (error) {
+    console.warn("reference brief failed", error);
+  }
+  return null;
+}
+
 async function sendAgentMessage() {
   const text = (els.agentInput?.value || "").trim();
   if (!text || agentSession.busy) return;
   els.agentInput.value = "";
   autoGrowAgentInput();
   pushAgentMessage("user", text);
+  if (agentSession.referenceMode) {
+    await runAgentReferenceSearch(text);
+    return;
+  }
+  if (isExplicitTopicGenerationRequest(text)) {
+    agentSession.busy = true;
+    renderAgentMessages();
+    const referenceBrief = await referenceBriefFromMessage(text);
+    agentSession.busy = false;
+    const directBrief = {
+      theme: text.slice(0, 80),
+      topicMode: referenceBrief ? "hotspot_reference" : "one_shot",
+      referenceItems: referenceBrief?.referenceItems || [],
+      primaryGoal: "awareness",
+      mustCover: [
+        referenceBrief ? "热点借势模式：从热点出发，不按常规家长决策链生成" : "常规选题模式",
+        "生成一组选题，不要直接进入内容生产",
+        "每个选题包含标题、切入角度、封面文案、正文主线",
+        ...((referenceBrief?.mustCover) || []),
+      ].slice(0, 10),
+      mustAvoid: [
+        "不要像明星八卦",
+        "不要太营销",
+        "不要把公众人物当商业背书",
+        ...((referenceBrief?.mustAvoid) || []),
+      ].slice(0, 10),
+      preferredPlatforms: ["xhs"],
+      toneOverride: "面向广州家长的小红书图文选题，借热点但克制、有家长价值",
+    };
+    agentSession.priorBrief = mergeBrief(agentSession.priorBrief, directBrief);
+    agentSession.lastMode = "focused";
+    pushAgentMessage("assistant", referenceBrief ? "我会先参考爆款库里的相关素材，再生成一组选题方向。" : "收到，这是选题需求，我会生成一组选题方向，不会跳到内容生产。");
+    await agentGenerate(directBrief, { maxDirections: topicCountFromText(text) || 10 });
+    return;
+  }
   if (shouldPrioritizeContentIntent(text) && routeContentIntent(text)) return;
   if (activeResultData() && routeAgentIntent(text)) return;
   if (isCampaignRequest(text)) {
@@ -4460,13 +4680,13 @@ async function runAgentBrief(text) {
   }
 }
 
-async function agentGenerate(extraBrief = null, { campaignLink = null } = {}) {
+async function agentGenerate(extraBrief = null, { campaignLink = null, maxDirections = null } = {}) {
   if (agentSession.busy) return;
   if (extraBrief) agentSession.priorBrief = mergeBrief(agentSession.priorBrief, extraBrief);
   agentSession.busy = true;
-  pushAgentMessage("assistant", "正在按家长决策链生成选题，结果会显示在主面板…");
+  pushAgentMessage("assistant", "正在结合球场档案和你的要求生成选题，结果会显示在主面板…");
   try {
-    const data = await generateDirections({ brief: agentSession.priorBrief, mode: agentSession.lastMode, fromAgent: true, campaignLink });
+    const data = await generateDirections({ brief: agentSession.priorBrief, mode: agentSession.lastMode, fromAgent: true, campaignLink, maxDirections });
     agentSession.busy = false;
     agentSession.messages.pop();
     rememberAgentResult("topic", `${data?.directions?.length || 0} 条选题方向`, resultRegistry["topic-directions"].summarize(data));
@@ -4899,7 +5119,40 @@ function handleAgentQuickAction(kind) {
   } else if (kind === "campaign") {
     pushAgentMessage("user", "生成活动策划");
     showCampaignGuide();
+  } else if (kind === "reference-search") {
+    activateAgentReferenceMode();
+  } else if (kind === "reference-board") {
+    setView("reference");
+    pushAgentMessage("assistant", "已打开爆款参考库。你也可以点「查参考库」，让我基于库里的内容做借势分析。");
   }
+}
+
+function briefFromReferenceContext() {
+  const ctx = agentSession.referenceContext || {};
+  const refs = Array.isArray(ctx.references) ? ctx.references : [];
+  const titles = refs.slice(0, 5).map((item) => item.title).filter(Boolean);
+  return {
+    theme: ctx.query || "参考库热点借势",
+    topicMode: "hotspot_reference",
+    referenceItems: refs.slice(0, 6).map((item) => ({
+      title: item.title || "",
+      typeLabel: item.typeLabel || item.sourceType || "",
+      content: item.content || "",
+      metrics: item.metrics || {},
+    })),
+    primaryGoal: "awareness",
+    mustCover: [
+      "热点借势模式：不要走常规家长决策链",
+      "翻译视频只是开场钩子，主体必须落到网球/长期运动/孩子运动培养",
+      "标题和封面必须能看出是少儿网球或长期运动选题，不要变成英语口语选题",
+      `参考库关键词：${ctx.query || ""}`,
+      ...titles.map((title) => `参考结构：${title}`),
+      "只借热点切入口和内容结构，不照搬原文",
+    ].filter(Boolean).slice(0, 10),
+    mustAvoid: ["不要八卦化", "不要把公众人物当商业背书", "不要承诺训练效果", "不要把口语/英语/翻译能力当成主体"],
+    preferredPlatforms: ["xhs", "douyin", "video"],
+    toneOverride: "像懂家长的小红书网球场运营顾问，借热点但最终落到少儿网球和长期运动培养",
+  };
 }
 
 function handleAgentChip(value, kind) {
@@ -4932,6 +5185,18 @@ function handleAgentChip(value, kind) {
   }
   if (kind === "suggest-campaign" || value === "__campaign__") {
     showCampaignGuide();
+    return;
+  }
+  if (kind === "reference-search" || value === "__reference_search__") {
+    activateAgentReferenceMode();
+    return;
+  }
+  if (kind === "open-reference-board" || value === "__open_reference_board__") {
+    setView("reference");
+    return;
+  }
+  if (kind === "topic-from-reference" || value === "__topic_from_reference__") {
+    agentGenerate(briefFromReferenceContext());
     return;
   }
   if (els.agentInput) {
@@ -6193,12 +6458,13 @@ els.profileView?.addEventListener("click", (event) => {
 });
 
 els.profileShortcutBtn.addEventListener("click", () => {
-  if (!["profile", "ai"].includes(currentRoute.module)) {
+  if (!["profile", "ai", "reference"].includes(currentRoute.module)) {
     profileReturnRoute = { ...currentRoute };
   }
   setView("profile");
 });
 els.aiShortcutBtn.addEventListener("click", () => setView("ai"));
+els.referenceShortcutBtn?.addEventListener("click", () => setView("reference"));
 
 els.planBtn.addEventListener("click", () => generatePlan());
 

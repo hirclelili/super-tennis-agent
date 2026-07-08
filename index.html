@@ -14,6 +14,7 @@
           <span id="venueNameLabel">读取球场档案中</span>
         </div>
         <div class="topbar-actions">
+          <button class="secondary" id="referenceShortcutBtn" type="button">爆款参考库</button>
           <button class="secondary" id="profileShortcutBtn" type="button">球场档案</button>
           <button class="secondary" id="aiShortcutBtn" type="button">AI 连接</button>
         </div>
@@ -39,6 +40,9 @@
             </button>
             <button class="nav-item" data-view="channels" type="button">
               <strong>社群运营</strong>
+            </button>
+            <button class="nav-item" data-view="reference" type="button">
+              <strong>爆款参考</strong>
             </button>
           </nav>
         </aside>
@@ -219,6 +223,16 @@
             </section>
 
             <section id="communityHistory"></section>
+          </section>
+
+          <section class="page-view hidden" id="referenceView">
+            <section class="page-header">
+              <div>
+                <h2>爆款参考库</h2>
+              </div>
+              <a class="secondary link-button" href="./tools/mediacrawler/hot-reference-board.html" target="_blank" rel="noreferrer">新窗口打开</a>
+            </section>
+            <iframe class="reference-board-frame" title="爆款参考库" src="./tools/mediacrawler/hot-reference-board.html"></iframe>
           </section>
 
           <section class="page-view hidden" id="profileView">
@@ -437,6 +451,8 @@
           <button class="agent-quick-btn" data-agent-quick="content" type="button">内容生产</button>
           <button class="agent-quick-btn" data-agent-quick="community" type="button">社群节奏</button>
           <button class="agent-quick-btn" data-agent-quick="campaign" type="button">活动策划</button>
+          <button class="agent-quick-btn" data-agent-quick="reference-search" type="button">查参考库</button>
+          <button class="agent-quick-btn" data-agent-quick="reference-board" type="button">爆款参考</button>
         </div>
         <div class="agent-memory-strip" id="agentMemorySummary"></div>
         <div class="agent-messages" id="agentMessages"></div>
